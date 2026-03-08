@@ -1,6 +1,8 @@
 # AuthGate SDK for Go
 
-[![Build Status](https://github.com/go-authgate/sdk-go/actions/workflows/ci.yml/badge.svg)](https://github.com/go-authgate/sdk-go/actions/workflows/ci.yml)
+[![Lint and Testing](https://github.com/go-authgate/sdk-go/actions/workflows/testing.yml/badge.svg)](https://github.com/go-authgate/sdk-go/actions/workflows/testing.yml)
+[![CodeQL](https://github.com/go-authgate/sdk-go/actions/workflows/codeql.yml/badge.svg)](https://github.com/go-authgate/sdk-go/actions/workflows/codeql.yml)
+[![Trivy Security Scan](https://github.com/go-authgate/sdk-go/actions/workflows/security.yml/badge.svg)](https://github.com/go-authgate/sdk-go/actions/workflows/security.yml)
 [![codecov](https://codecov.io/gh/go-authgate/sdk-go/branch/main/graph/badge.svg)](https://codecov.io/gh/go-authgate/sdk-go)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-authgate/sdk-go.svg)](https://pkg.go.dev/github.com/go-authgate/sdk-go)
 
