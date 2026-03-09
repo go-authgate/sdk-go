@@ -80,7 +80,7 @@ func (f *FileStore) withFileLock(fn func() error) error {
 	if err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
-	defer lock.release() //nolint:errcheck
+	defer lock.release() //nolint:errcheck // best-effort cleanup; lock file has stale detection
 
 	return fn()
 }
