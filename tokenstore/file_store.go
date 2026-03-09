@@ -32,26 +32,67 @@ func NewFileStore(filePath string) *FileStore {
 	return &FileStore{FilePath: filePath}
 }
 
-// Load loads tokens from the file for the given client ID.
-func (f *FileStore) Load(clientID string) (*Token, error) {
+// readStorageMap reads and unmarshals the token storage map from the file.
+// Returns an empty initialized map if the file does not exist.
+func (f *FileStore) readStorageMap() (tokenStorageMap, error) {
+	var m tokenStorageMap
 	data, err := os.ReadFile(f.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, ErrNotFound
+			m.Tokens = make(map[string]*Token)
+			return m, nil
 		}
+		return m, fmt.Errorf("failed to read token file: %w", err)
+	}
+
+	if err := json.Unmarshal(data, &m); err != nil {
+		return m, fmt.Errorf("failed to parse token file: %w", err)
+	}
+	if m.Tokens == nil {
+		m.Tokens = make(map[string]*Token)
+	}
+	return m, nil
+}
+
+// writeStorageMap marshals and atomically writes the token storage map to the file.
+func (f *FileStore) writeStorageMap(m tokenStorageMap) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tempFile := f.FilePath + ".tmp"
+	if err := os.WriteFile(tempFile, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	if err := os.Rename(tempFile, f.FilePath); err != nil {
+		_ = os.Remove(tempFile)
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	return nil
+}
+
+// withFileLock acquires a file lock, runs fn, and releases the lock.
+func (f *FileStore) withFileLock(fn func() error) error {
+	lock, err := acquireFileLock(f.FilePath)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	defer lock.release() //nolint:errcheck // best-effort cleanup; lock file has stale detection
+
+	return fn()
+}
+
+// Load loads tokens from the file for the given client ID.
+func (f *FileStore) Load(clientID string) (*Token, error) {
+	m, err := f.readStorageMap()
+	if err != nil {
 		return nil, err
 	}
 
-	var storageMap tokenStorageMap
-	if err := json.Unmarshal(data, &storageMap); err != nil {
-		return nil, fmt.Errorf("failed to parse token file: %w", err)
-	}
-
-	if storageMap.Tokens == nil {
-		return nil, ErrNotFound
-	}
-
-	storage, ok := storageMap.Tokens[clientID]
+	storage, ok := m.Tokens[clientID]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -66,109 +107,34 @@ func (f *FileStore) Save(storage *Token) error {
 		return err
 	}
 
-	// Acquire file lock to prevent concurrent access
-	lock, err := acquireFileLock(f.FilePath)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	defer func() {
-		if releaseErr := lock.release(); releaseErr != nil {
-			fmt.Fprintf(os.Stderr, "failed to release lock: %v\n", releaseErr)
+	return f.withFileLock(func() error {
+		m, err := f.readStorageMap()
+		if err != nil {
+			return err
 		}
-	}()
 
-	// Load existing token map (inside lock to ensure consistency)
-	var storageMap tokenStorageMap
-	existingData, err := os.ReadFile(f.FilePath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read token file: %w", err)
-		}
-		storageMap.Tokens = make(map[string]*Token)
-	} else {
-		if unmarshalErr := json.Unmarshal(existingData, &storageMap); unmarshalErr != nil {
-			return fmt.Errorf("failed to parse token file: %w", unmarshalErr)
-		}
-		if storageMap.Tokens == nil {
-			storageMap.Tokens = make(map[string]*Token)
-		}
-	}
+		m.Tokens[storage.ClientID] = storage
 
-	storageMap.Tokens[storage.ClientID] = storage
-
-	data, err := json.MarshalIndent(storageMap, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	// Write to temp file first (atomic write pattern)
-	tempFile := f.FilePath + ".tmp"
-	if err := os.WriteFile(tempFile, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-
-	// Atomic rename
-	if err := os.Rename(tempFile, f.FilePath); err != nil {
-		if removeErr := os.Remove(tempFile); removeErr != nil {
-			return fmt.Errorf(
-				"failed to rename temp file: %v; additionally failed to remove temp file: %w",
-				err,
-				removeErr,
-			)
-		}
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-
-	return nil
+		return f.writeStorageMap(m)
+	})
 }
 
 // Delete removes tokens for the given client ID from the file.
 func (f *FileStore) Delete(clientID string) error {
-	lock, err := acquireFileLock(f.FilePath)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	defer func() {
-		if releaseErr := lock.release(); releaseErr != nil {
-			fmt.Fprintf(os.Stderr, "failed to release lock: %v\n", releaseErr)
+	return f.withFileLock(func() error {
+		m, err := f.readStorageMap()
+		if err != nil {
+			return err
 		}
-	}()
 
-	data, err := os.ReadFile(f.FilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
+		if _, ok := m.Tokens[clientID]; !ok {
 			return nil
 		}
-		return err
-	}
 
-	var storageMap tokenStorageMap
-	if err := json.Unmarshal(data, &storageMap); err != nil {
-		return fmt.Errorf("failed to parse token file: %w", err)
-	}
+		delete(m.Tokens, clientID)
 
-	if storageMap.Tokens == nil {
-		return nil
-	}
-
-	delete(storageMap.Tokens, clientID)
-
-	newData, err := json.MarshalIndent(storageMap, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	tempFile := f.FilePath + ".tmp"
-	if err := os.WriteFile(tempFile, newData, 0o600); err != nil {
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-
-	if err := os.Rename(tempFile, f.FilePath); err != nil {
-		_ = os.Remove(tempFile)
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-
-	return nil
+		return f.writeStorageMap(m)
+	})
 }
 
 // String returns a description of this store.

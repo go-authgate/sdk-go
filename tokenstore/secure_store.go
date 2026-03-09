@@ -9,7 +9,8 @@ type Prober interface {
 // SecureStore is a composite Store that tries the OS keyring first
 // and falls back to file-based storage if the keyring is unavailable.
 type SecureStore struct {
-	primary Store
+	primary    Store
+	useKeyring bool
 }
 
 // NewSecureStore creates a SecureStore. If kr implements Prober and the probe
@@ -18,15 +19,14 @@ type SecureStore struct {
 // (check the result with String() or compare the returned store's primary).
 func NewSecureStore(kr, file Store) *SecureStore {
 	if p, ok := kr.(Prober); ok && p.Probe() {
-		return &SecureStore{primary: kr}
+		return &SecureStore{primary: kr, useKeyring: true}
 	}
-	return &SecureStore{primary: file}
+	return &SecureStore{primary: file, useKeyring: false}
 }
 
 // UseKeyring reports whether the secure store is using the keyring backend.
 func (s *SecureStore) UseKeyring() bool {
-	_, ok := s.primary.(Prober)
-	return ok
+	return s.useKeyring
 }
 
 // Load loads tokens from the active store.

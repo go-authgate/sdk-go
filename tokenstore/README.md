@@ -137,3 +137,33 @@ if errors.Is(err, tokenstore.ErrNotFound) {
 | `ErrNotFound`      | No token found for the given client ID |
 | `ErrNilToken`      | A nil token was passed to `Save`       |
 | `ErrEmptyClientID` | Token has an empty `ClientID` field    |
+
+## Benchmarks
+
+Tested on Apple M4 Pro, Go 1.24. KeyringStore uses an in-memory mock; real OS keyring performance will vary (typically a few hundred microseconds to a few milliseconds due to IPC overhead).
+
+### FileStore vs KeyringStore
+
+| Operation | FileStore           | KeyringStore (mock)  | Ratio |
+| --------- | ------------------- | -------------------- | ----- |
+| Save      | ~196 µs / 42 allocs | ~0.31 µs / 3 allocs  | ~630x |
+| Load      | ~12 µs / 23 allocs  | ~0.85 µs / 10 allocs | ~14x  |
+| Delete    | ~391 µs / 75 allocs | ~0.49 µs / 8 allocs  | ~800x |
+
+FileStore is slower because every Save/Delete requires file lock acquisition, full JSON read-modify-write, and an atomic rename. Load is faster since it skips the file lock.
+
+### FileStore scaling by number of stored clients
+
+| Clients | Save latency | Allocs |
+| ------- | ------------ | ------ |
+| 1       | 196 µs       | 42     |
+| 10      | 213 µs       | 126    |
+| 50      | 310 µs       | 490    |
+
+Allocations grow linearly because the entire token map is deserialized and re-serialized on each write.
+
+Run benchmarks yourself:
+
+```bash
+go test ./tokenstore/... -bench=. -benchmem -count=3 -run=^$
+```
