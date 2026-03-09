@@ -189,6 +189,109 @@ func TestFileStore_ConcurrentWrites(t *testing.T) {
 	}
 }
 
+func TestFileStore_SaveNilToken(t *testing.T) {
+	tempDir := t.TempDir()
+	store := tokenstore.NewFileStore(filepath.Join(tempDir, "tokens.json"))
+
+	err := store.Save(nil)
+	if err != tokenstore.ErrNilToken {
+		t.Errorf("Save(nil) error = %v, want ErrNilToken", err)
+	}
+}
+
+func TestFileStore_SaveEmptyClientID(t *testing.T) {
+	tempDir := t.TempDir()
+	store := tokenstore.NewFileStore(filepath.Join(tempDir, "tokens.json"))
+
+	err := store.Save(&tokenstore.Token{AccessToken: "tok"})
+	if err != tokenstore.ErrEmptyClientID {
+		t.Errorf("Save(empty ClientID) error = %v, want ErrEmptyClientID", err)
+	}
+}
+
+func TestFileStore_FilePermissions(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "tokens.json")
+	store := tokenstore.NewFileStore(filePath)
+
+	if err := store.Save(&tokenstore.Token{
+		AccessToken: "tok",
+		ClientID:    "c1",
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+
+	perm := info.Mode().Perm()
+	if perm != 0o600 {
+		t.Errorf("file permission = %o, want 0600", perm)
+	}
+}
+
+func TestFileStore_SaveCreatesParentDirectories(t *testing.T) {
+	tempDir := t.TempDir()
+	nestedPath := filepath.Join(tempDir, "a", "b", "c", "tokens.json")
+	store := tokenstore.NewFileStore(nestedPath)
+
+	if err := store.Save(&tokenstore.Token{
+		AccessToken: "tok",
+		ClientID:    "c1",
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load("c1")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.AccessToken != "tok" {
+		t.Errorf("AccessToken = %v, want tok", loaded.AccessToken)
+	}
+}
+
+func TestFileStore_List(t *testing.T) {
+	tempDir := t.TempDir()
+	store := tokenstore.NewFileStore(filepath.Join(tempDir, "tokens.json"))
+
+	// Empty store returns empty slice
+	ids, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("List() on empty store returned %d items, want 0", len(ids))
+	}
+
+	// Save some tokens
+	for _, id := range []string{"charlie", "alpha", "bravo"} {
+		if err := store.Save(&tokenstore.Token{
+			AccessToken: "tok-" + id,
+			ClientID:    id,
+		}); err != nil {
+			t.Fatalf("Save(%s) error = %v", id, err)
+		}
+	}
+
+	ids, err = store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+
+	expected := []string{"alpha", "bravo", "charlie"}
+	if len(ids) != len(expected) {
+		t.Fatalf("List() returned %d items, want %d", len(ids), len(expected))
+	}
+	for i, id := range ids {
+		if id != expected[i] {
+			t.Errorf("List()[%d] = %v, want %v", i, id, expected[i])
+		}
+	}
+}
+
 func TestFileStore_String(t *testing.T) {
 	store := tokenstore.NewFileStore("/path/to/tokens.json")
 	expected := "file: /path/to/tokens.json"

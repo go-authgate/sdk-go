@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 )
 
 // validateToken checks that storage is non-nil and has a non-empty ClientID.
@@ -54,6 +56,14 @@ func (f *FileStore) readStorageMap() (tokenStorageMap, error) {
 	return m, nil
 }
 
+// ensureDir creates the parent directory of the token file if it does not exist.
+func (f *FileStore) ensureDir() error {
+	if err := os.MkdirAll(filepath.Dir(f.FilePath), 0o700); err != nil {
+		return fmt.Errorf("failed to create token directory: %w", err)
+	}
+	return nil
+}
+
 // writeStorageMap marshals and atomically writes the token storage map to the file.
 func (f *FileStore) writeStorageMap(m tokenStorageMap) error {
 	data, err := json.MarshalIndent(m, "", "  ")
@@ -102,8 +112,13 @@ func (f *FileStore) Load(clientID string) (*Token, error) {
 
 // Save saves tokens to the file, merging with existing tokens for other clients.
 // Uses file locking to prevent race conditions.
+// Automatically creates parent directories if they do not exist.
 func (f *FileStore) Save(storage *Token) error {
 	if err := validateToken(storage); err != nil {
+		return err
+	}
+
+	if err := f.ensureDir(); err != nil {
 		return err
 	}
 
@@ -135,6 +150,20 @@ func (f *FileStore) Delete(clientID string) error {
 
 		return f.writeStorageMap(m)
 	})
+}
+
+// List returns all stored client IDs, sorted alphabetically.
+func (f *FileStore) List() ([]string, error) {
+	m, err := f.readStorageMap()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(m.Tokens))
+	for id := range m.Tokens {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids, nil
 }
 
 // String returns a description of this store.

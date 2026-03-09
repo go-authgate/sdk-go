@@ -23,10 +23,8 @@ import (
 )
 
 func main() {
-  // Create a secure store with keyring + file fallback
-  kr := tokenstore.NewKeyringStore("my-app")
-  file := tokenstore.NewFileStore("/tmp/my-app-tokens.json")
-  store := tokenstore.NewSecureStore(kr, file)
+  // Create a secure store with keyring + file fallback (one-liner)
+  store := tokenstore.DefaultSecureStore("my-app", "/tmp/my-app-tokens.json")
 
   fmt.Println("Using backend:", store.String())
 
@@ -84,9 +82,52 @@ type Token struct {
 }
 ```
 
+### Token Helpers
+
+Tokens provide convenience methods for checking validity:
+
+```go
+token, err := store.Load("my-client-id")
+if err != nil {
+  // handle error
+}
+
+// Check if token has expired
+if token.IsExpired() {
+  // refresh the token
+}
+
+// Check if token is usable (non-empty access token and not expired)
+if token.IsValid() {
+  // use the token
+}
+```
+
+### Listing Tokens
+
+Stores that support listing implement the optional `Lister` interface:
+
+```go
+type Lister interface {
+  List() ([]string, error)
+}
+```
+
+`FileStore` and `SecureStore` (when backed by `FileStore`) support listing:
+
+```go
+if lister, ok := store.(tokenstore.Lister); ok {
+  ids, err := lister.List()
+  if err != nil {
+    panic(err)
+  }
+  fmt.Println("Stored client IDs:", ids) // sorted alphabetically
+}
+```
+
 ### FileStore
 
-Stores tokens in a JSON file with file locking and atomic writes.
+Stores tokens in a JSON file with file locking and atomic writes. Parent directories are created automatically.
 
 ```go
 store := tokenstore.NewFileStore("~/.config/my-app/tokens.json")
@@ -110,6 +151,10 @@ if store.Probe() {
 A composite store that automatically selects the best available backend. If the keyring is available (tested via `Probe()`), it uses the keyring; otherwise, it falls back to file storage.
 
 ```go
+// Quick setup with defaults
+store := tokenstore.DefaultSecureStore("my-app", "/path/to/tokens.json")
+
+// Or configure manually
 kr := tokenstore.NewKeyringStore("my-app")
 file := tokenstore.NewFileStore("/path/to/tokens.json")
 store := tokenstore.NewSecureStore(kr, file)
