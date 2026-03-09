@@ -1,6 +1,7 @@
 package tokenstore
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -26,7 +27,6 @@ func acquireFileLock(filePath string) (*fileLock, error) {
 	for range lockMaxRetries {
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			fmt.Fprintf(lockFile, "%d", os.Getpid())
 			return &fileLock{
 				lockFile: lockFile,
 				lockPath: lockPath,
@@ -61,8 +61,10 @@ func acquireFileLock(filePath string) (*fileLock, error) {
 
 // release releases the file lock.
 func (fl *fileLock) release() error {
+	var closeErr error
 	if fl.lockFile != nil {
-		fl.lockFile.Close()
+		closeErr = fl.lockFile.Close()
 	}
-	return os.Remove(fl.lockPath)
+	removeErr := os.Remove(fl.lockPath)
+	return errors.Join(closeErr, removeErr)
 }
