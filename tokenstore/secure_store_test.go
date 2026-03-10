@@ -2,6 +2,7 @@ package tokenstore
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -66,6 +67,26 @@ func newMockProberStore(name string, probeResult bool) *mockProberStore {
 
 func (m *mockProberStore) Probe() bool {
 	return m.probeResult
+}
+
+// mockListerStore implements Store and Lister.
+type mockListerStore struct {
+	mockStore
+}
+
+func newMockListerStore(name string) *mockListerStore {
+	return &mockListerStore{
+		mockStore: mockStore{tokens: make(map[string]*Token), name: name},
+	}
+}
+
+func (m *mockListerStore) List() ([]string, error) {
+	ids := make([]string, 0, len(m.tokens))
+	for id := range m.tokens {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids, nil
 }
 
 func TestSecureStore_UsesKeyringWhenProbeSucceeds(t *testing.T) {
@@ -151,6 +172,54 @@ func TestSecureStore_FallsBackWhenKrNotProber(t *testing.T) {
 
 	if store.String() != "file: test" {
 		t.Errorf("String() = %v, want file: test", store.String())
+	}
+}
+
+func TestDefaultSecureStore(t *testing.T) {
+	store := DefaultSecureStore("test-service", t.TempDir()+"/tokens.json")
+	if store == nil {
+		t.Fatal("DefaultSecureStore() returned nil")
+	}
+}
+
+func TestSecureStore_ListWithLister(t *testing.T) {
+	file := newMockListerStore("file: test")
+	file.tokens["bravo"] = &Token{ClientID: "bravo"}
+	file.tokens["alpha"] = &Token{ClientID: "alpha"}
+
+	kr := newMockProberStore("keyring: test", false)
+	store := NewSecureStore(kr, file)
+
+	// *SecureStore does NOT satisfy Lister — the underlying file store does.
+	if _, ok := any(store).(Lister); ok {
+		t.Fatal("*SecureStore should not satisfy Lister")
+	}
+
+	// The underlying FileStore (mockListerStore) satisfies Lister directly.
+	lister, ok := any(file).(Lister)
+	if !ok {
+		t.Fatal("mockListerStore should satisfy Lister")
+	}
+	ids, err := lister.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("List() returned %d items, want 2", len(ids))
+	}
+	if ids[0] != "alpha" || ids[1] != "bravo" {
+		t.Errorf("List() = %v, want [alpha bravo]", ids)
+	}
+}
+
+func TestSecureStore_ListNotSupported(t *testing.T) {
+	kr := newMockProberStore("keyring: test", true)
+	file := newMockStore("file: test")
+	store := NewSecureStore(kr, file)
+
+	// *SecureStore never satisfies Lister, regardless of backend.
+	if _, ok := any(store).(Lister); ok {
+		t.Fatal("*SecureStore should not satisfy Lister")
 	}
 }
 

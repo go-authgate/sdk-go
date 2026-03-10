@@ -136,6 +136,26 @@ func TestKeyringStore_MultipleClients(t *testing.T) {
 	}
 }
 
+func TestKeyringStore_SaveNilToken(t *testing.T) {
+	keyring.MockInit()
+	store := tokenstore.NewKeyringStore("test-service")
+
+	err := store.Save(nil)
+	if err != tokenstore.ErrNilToken {
+		t.Errorf("Save(nil) error = %v, want ErrNilToken", err)
+	}
+}
+
+func TestKeyringStore_SaveEmptyClientID(t *testing.T) {
+	keyring.MockInit()
+	store := tokenstore.NewKeyringStore("test-service")
+
+	err := store.Save(&tokenstore.Token{AccessToken: "tok"})
+	if err != tokenstore.ErrEmptyClientID {
+		t.Errorf("Save(empty ClientID) error = %v, want ErrEmptyClientID", err)
+	}
+}
+
 func TestKeyringStore_String(t *testing.T) {
 	store := tokenstore.NewKeyringStore("my-service")
 	expected := "keyring: my-service"

@@ -6,6 +6,13 @@ type Prober interface {
 	Probe() bool
 }
 
+// DefaultSecureStore creates a SecureStore with sensible defaults.
+func DefaultSecureStore(serviceName, filePath string) *SecureStore {
+	kr := NewKeyringStore(serviceName)
+	file := NewFileStore(filePath)
+	return NewSecureStore(kr, file)
+}
+
 // SecureStore is a composite Store that tries the OS keyring first
 // and falls back to file-based storage if the keyring is unavailable.
 type SecureStore struct {
