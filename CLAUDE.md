@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Go SDK for AuthGate — currently provides the `tokenstore` package for secure OAuth token storage with OS keyring integration and file-based fallback.
+Go SDK for AuthGate — currently provides the `credstore` package for secure credential storage with OS keyring integration and file-based fallback.
 
 Module: `github.com/go-authgate/sdk-go` (Go 1.25+)
 
@@ -23,7 +23,7 @@ make fmt           # Format code with golangci-lint (gofmt + gofumpt + golines)
 - Banned packages: `io/ioutil`, `golang.org/x/exp`, `github.com/pkg/errors` — use stdlib equivalents
 - `nolintlint` requires explanation and specific linter name for any `//nolint` directive
 - Error wrapping uses `fmt.Errorf` with `%w` verb (not `pkg/errors`)
-- File permissions for token files: `0o600`
+- File permissions for credential files: `0o600`
 
 ## Before Committing
 
