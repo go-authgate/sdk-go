@@ -1,7 +1,5 @@
 package tokenstore
 
-import "fmt"
-
 // Prober is an optional interface that a Store can implement to test
 // whether its backend is available.
 type Prober interface {
@@ -51,14 +49,6 @@ func (s *SecureStore) Save(storage *Token) error {
 // Delete removes tokens from the active store.
 func (s *SecureStore) Delete(clientID string) error {
 	return s.primary.Delete(clientID)
-}
-
-// List returns all stored client IDs if the primary store supports listing.
-func (s *SecureStore) List() ([]string, error) {
-	if l, ok := s.primary.(Lister); ok {
-		return l.List()
-	}
-	return nil, fmt.Errorf("list not supported by %s", s.primary)
 }
 
 // String returns a description of the active store.

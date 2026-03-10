@@ -105,7 +105,7 @@ if token.IsValid() {
 
 ### Listing Tokens
 
-Stores that support listing implement the optional `Lister` interface:
+`FileStore` implements the optional `Lister` interface:
 
 ```go
 type Lister interface {
@@ -113,7 +113,7 @@ type Lister interface {
 }
 ```
 
-`FileStore` and `SecureStore` (when backed by `FileStore`) support listing:
+Use a type assertion to check listing support at runtime:
 
 ```go
 if lister, ok := store.(tokenstore.Lister); ok {
@@ -124,6 +124,8 @@ if lister, ok := store.(tokenstore.Lister); ok {
   fmt.Println("Stored client IDs:", ids) // sorted alphabetically
 }
 ```
+
+> Note: `*SecureStore` does **not** implement `Lister`. If you need listing, use `*FileStore` directly.
 
 ### FileStore
 

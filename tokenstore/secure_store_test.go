@@ -190,7 +190,17 @@ func TestSecureStore_ListWithLister(t *testing.T) {
 	kr := newMockProberStore("keyring: test", false)
 	store := NewSecureStore(kr, file)
 
-	ids, err := store.List()
+	// *SecureStore does NOT satisfy Lister — the underlying file store does.
+	if _, ok := any(store).(Lister); ok {
+		t.Fatal("*SecureStore should not satisfy Lister")
+	}
+
+	// The underlying FileStore (mockListerStore) satisfies Lister directly.
+	lister, ok := any(file).(Lister)
+	if !ok {
+		t.Fatal("mockListerStore should satisfy Lister")
+	}
+	ids, err := lister.List()
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -207,9 +217,9 @@ func TestSecureStore_ListNotSupported(t *testing.T) {
 	file := newMockStore("file: test")
 	store := NewSecureStore(kr, file)
 
-	_, err := store.List()
-	if err == nil {
-		t.Fatal("List() should return error when primary does not support listing")
+	// *SecureStore never satisfies Lister, regardless of backend.
+	if _, ok := any(store).(Lister); ok {
+		t.Fatal("*SecureStore should not satisfy Lister")
 	}
 }
 

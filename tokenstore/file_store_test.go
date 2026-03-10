@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -210,6 +211,10 @@ func TestFileStore_SaveEmptyClientID(t *testing.T) {
 }
 
 func TestFileStore_FilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file permission test is not applicable on Windows")
+	}
+
 	tempDir := t.TempDir()
 	filePath := filepath.Join(tempDir, "tokens.json")
 	store := tokenstore.NewFileStore(filePath)
