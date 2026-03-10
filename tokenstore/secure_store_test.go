@@ -7,82 +7,84 @@ import (
 	"time"
 )
 
-// mockStore is a simple mock implementing Store for testing.
-type mockStore struct {
-	tokens map[string]*Token
-	name   string
-	err    error
+// mockStore is a simple mock implementing Store[T] for testing.
+type mockStore[T any] struct {
+	data map[string]T
+	name string
+	err  error
 }
 
-func newMockStore(name string) *mockStore {
-	return &mockStore{
-		tokens: make(map[string]*Token),
-		name:   name,
+func newMockStore[T any](name string) *mockStore[T] {
+	return &mockStore[T]{
+		data: make(map[string]T),
+		name: name,
 	}
 }
 
-func (m *mockStore) Load(clientID string) (*Token, error) {
+func (m *mockStore[T]) Load(clientID string) (T, error) {
 	if m.err != nil {
-		return nil, m.err
+		var zero T
+		return zero, m.err
 	}
-	storage, ok := m.tokens[clientID]
+	data, ok := m.data[clientID]
 	if !ok {
-		return nil, ErrNotFound
+		var zero T
+		return zero, ErrNotFound
 	}
-	return storage, nil
+	return data, nil
 }
 
-func (m *mockStore) Save(storage *Token) error {
+func (m *mockStore[T]) Save(clientID string, data T) error {
 	if m.err != nil {
 		return m.err
 	}
-	m.tokens[storage.ClientID] = storage
+	m.data[clientID] = data
 	return nil
 }
 
-func (m *mockStore) Delete(clientID string) error {
+func (m *mockStore[T]) Delete(clientID string) error {
 	if m.err != nil {
 		return m.err
 	}
-	delete(m.tokens, clientID)
+	delete(m.data, clientID)
 	return nil
 }
 
-func (m *mockStore) String() string {
+func (m *mockStore[T]) String() string {
 	return m.name
 }
 
-// mockProberStore implements both Store and Prober.
-type mockProberStore struct {
-	mockStore
+// mockProberStore implements both Store[T] and Prober.
+type mockProberStore[T any] struct {
+	mockStore[T]
 	probeResult bool
 }
 
-func newMockProberStore(name string, probeResult bool) *mockProberStore {
-	return &mockProberStore{
-		mockStore:   mockStore{tokens: make(map[string]*Token), name: name},
+func newMockProberStore[T any](name string, probeResult bool) *mockProberStore[T] {
+	return &mockProberStore[T]{
+		mockStore:   mockStore[T]{data: make(map[string]T), name: name},
 		probeResult: probeResult,
 	}
 }
 
-func (m *mockProberStore) Probe() bool {
+func (m *mockProberStore[T]) Probe() bool {
 	return m.probeResult
 }
 
-// mockListerStore implements Store and Lister.
-type mockListerStore struct {
-	mockStore
+// mockListerStore implements Store[T] and Lister.
+type mockListerStore[T any] struct {
+	mockStore[T]
 }
 
-func newMockListerStore(name string) *mockListerStore {
-	return &mockListerStore{
-		mockStore: mockStore{tokens: make(map[string]*Token), name: name},
+func newMockListerStore[T any](name string) *mockListerStore[T] {
+	return &mockListerStore[T]{
+		mockStore: mockStore[T]{data: make(map[string]T), name: name},
 	}
 }
 
-func (m *mockListerStore) List() ([]string, error) {
-	ids := make([]string, 0, len(m.tokens))
-	for id := range m.tokens {
+func (m *mockListerStore[T]) List() ([]string, error) {
+	ids := make([]string, 0, len(m.data))
+	for id := range m.data {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
@@ -90,26 +92,26 @@ func (m *mockListerStore) List() ([]string, error) {
 }
 
 func TestSecureStore_UsesKeyringWhenProbeSucceeds(t *testing.T) {
-	kr := newMockProberStore("keyring: test", true)
-	file := newMockStore("file: test")
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
 
-	store := NewSecureStore(kr, file)
+	store := NewSecureStore[Token](kr, file)
 
-	storage := &Token{
+	tok := Token{
 		AccessToken: "test-token",
 		ClientID:    "test-client",
 		ExpiresAt:   time.Now().Add(1 * time.Hour),
 	}
 
-	if err := store.Save(storage); err != nil {
+	if err := store.Save(tok.ClientID, tok); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 
 	// Should be in keyring, not file
-	if _, ok := kr.tokens["test-client"]; !ok {
+	if _, ok := kr.data["test-client"]; !ok {
 		t.Error("Token not found in keyring store")
 	}
-	if _, ok := file.tokens["test-client"]; ok {
+	if _, ok := file.data["test-client"]; ok {
 		t.Error("Token should not be in file store")
 	}
 
@@ -131,26 +133,26 @@ func TestSecureStore_UsesKeyringWhenProbeSucceeds(t *testing.T) {
 }
 
 func TestSecureStore_FallsBackToFileWhenProbeFails(t *testing.T) {
-	kr := newMockProberStore("keyring: test", false)
-	file := newMockStore("file: test")
+	kr := newMockProberStore[Token]("keyring: test", false)
+	file := newMockStore[Token]("file: test")
 
-	store := NewSecureStore(kr, file)
+	store := NewSecureStore[Token](kr, file)
 
-	storage := &Token{
+	tok := Token{
 		AccessToken: "test-token",
 		ClientID:    "test-client",
 		ExpiresAt:   time.Now().Add(1 * time.Hour),
 	}
 
-	if err := store.Save(storage); err != nil {
+	if err := store.Save(tok.ClientID, tok); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 
 	// Should be in file, not keyring
-	if _, ok := file.tokens["test-client"]; !ok {
+	if _, ok := file.data["test-client"]; !ok {
 		t.Error("Token not found in file store")
 	}
-	if _, ok := kr.tokens["test-client"]; ok {
+	if _, ok := kr.data["test-client"]; ok {
 		t.Error("Token should not be in keyring store")
 	}
 
@@ -165,30 +167,30 @@ func TestSecureStore_FallsBackToFileWhenProbeFails(t *testing.T) {
 
 func TestSecureStore_FallsBackWhenKrNotProber(t *testing.T) {
 	// kr does not implement Prober, should fall back to file
-	kr := newMockStore("keyring: test")
-	file := newMockStore("file: test")
+	kr := newMockStore[Token]("keyring: test")
+	file := newMockStore[Token]("file: test")
 
-	store := NewSecureStore(kr, file)
+	store := NewSecureStore[Token](kr, file)
 
 	if store.String() != "file: test" {
 		t.Errorf("String() = %v, want file: test", store.String())
 	}
 }
 
-func TestDefaultSecureStore(t *testing.T) {
-	store := DefaultSecureStore("test-service", t.TempDir()+"/tokens.json")
+func TestDefaultTokenSecureStore(t *testing.T) {
+	store := DefaultTokenSecureStore("test-service", t.TempDir()+"/tokens.json")
 	if store == nil {
-		t.Fatal("DefaultSecureStore() returned nil")
+		t.Fatal("DefaultTokenSecureStore() returned nil")
 	}
 }
 
 func TestSecureStore_ListWithLister(t *testing.T) {
-	file := newMockListerStore("file: test")
-	file.tokens["bravo"] = &Token{ClientID: "bravo"}
-	file.tokens["alpha"] = &Token{ClientID: "alpha"}
+	file := newMockListerStore[Token]("file: test")
+	file.data["bravo"] = Token{ClientID: "bravo"}
+	file.data["alpha"] = Token{ClientID: "alpha"}
 
-	kr := newMockProberStore("keyring: test", false)
-	store := NewSecureStore(kr, file)
+	kr := newMockProberStore[Token]("keyring: test", false)
+	store := NewSecureStore[Token](kr, file)
 
 	// *SecureStore does NOT satisfy Lister — the underlying file store does.
 	if _, ok := any(store).(Lister); ok {
@@ -213,9 +215,9 @@ func TestSecureStore_ListWithLister(t *testing.T) {
 }
 
 func TestSecureStore_ListNotSupported(t *testing.T) {
-	kr := newMockProberStore("keyring: test", true)
-	file := newMockStore("file: test")
-	store := NewSecureStore(kr, file)
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
 
 	// *SecureStore never satisfies Lister, regardless of backend.
 	if _, ok := any(store).(Lister); ok {
@@ -224,15 +226,15 @@ func TestSecureStore_ListNotSupported(t *testing.T) {
 }
 
 func TestSecureStore_Delete(t *testing.T) {
-	kr := newMockProberStore("keyring: test", true)
-	file := newMockStore("file: test")
-	store := NewSecureStore(kr, file)
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
 
-	storage := &Token{
+	tok := Token{
 		AccessToken: "test-token",
 		ClientID:    "test-client",
 	}
-	if err := store.Save(storage); err != nil {
+	if err := store.Save(tok.ClientID, tok); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 

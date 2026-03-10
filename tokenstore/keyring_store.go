@@ -1,7 +1,6 @@
 package tokenstore
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -10,18 +9,19 @@ import (
 
 const probeUser = "__authgate_probe__"
 
-// KeyringStore stores tokens in the OS keyring (macOS Keychain, Linux Secret Service, Windows Credential Manager).
-type KeyringStore struct {
+// KeyringStore stores values in the OS keyring (macOS Keychain, Linux Secret Service, Windows Credential Manager).
+type KeyringStore[T any] struct {
 	ServiceName string
+	codec       Codec[T]
 }
 
-// NewKeyringStore creates a new KeyringStore.
-func NewKeyringStore(serviceName string) *KeyringStore {
-	return &KeyringStore{ServiceName: serviceName}
+// NewKeyringStore creates a new KeyringStore with the given codec.
+func NewKeyringStore[T any](serviceName string, codec Codec[T]) *KeyringStore[T] {
+	return &KeyringStore[T]{ServiceName: serviceName, codec: codec}
 }
 
 // Probe tests whether the OS keyring is available by setting and deleting a test entry.
-func (k *KeyringStore) Probe() bool {
+func (k *KeyringStore[T]) Probe() bool {
 	if err := keyring.Set(k.ServiceName, probeUser, "probe"); err != nil {
 		return false
 	}
@@ -31,44 +31,40 @@ func (k *KeyringStore) Probe() bool {
 	return true
 }
 
-// Load loads tokens from the keyring for the given client ID.
-func (k *KeyringStore) Load(clientID string) (*Token, error) {
+// Load loads data from the keyring for the given client ID.
+func (k *KeyringStore[T]) Load(clientID string) (T, error) {
+	var zero T
 	data, err := keyring.Get(k.ServiceName, clientID)
 	if err != nil {
 		if errors.Is(err, keyring.ErrNotFound) {
-			return nil, ErrNotFound
+			return zero, ErrNotFound
 		}
-		return nil, fmt.Errorf("failed to read from keyring: %w", err)
+		return zero, fmt.Errorf("failed to read from keyring: %w", err)
 	}
 
-	var storage Token
-	if err := json.Unmarshal([]byte(data), &storage); err != nil {
-		return nil, fmt.Errorf("failed to parse keyring data: %w", err)
-	}
-
-	return &storage, nil
+	return k.codec.Decode(data)
 }
 
-// Save saves tokens to the keyring.
-func (k *KeyringStore) Save(storage *Token) error {
-	if err := validateToken(storage); err != nil {
+// Save saves data to the keyring for the given client ID.
+func (k *KeyringStore[T]) Save(clientID string, data T) error {
+	if clientID == "" {
+		return ErrEmptyClientID
+	}
+
+	encoded, err := k.codec.Encode(data)
+	if err != nil {
 		return err
 	}
 
-	data, err := json.Marshal(storage)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token data: %w", err)
-	}
-
-	if err := keyring.Set(k.ServiceName, storage.ClientID, string(data)); err != nil {
+	if err := keyring.Set(k.ServiceName, clientID, encoded); err != nil {
 		return fmt.Errorf("failed to save to keyring: %w", err)
 	}
 
 	return nil
 }
 
-// Delete removes tokens for the given client ID from the keyring.
-func (k *KeyringStore) Delete(clientID string) error {
+// Delete removes data for the given client ID from the keyring.
+func (k *KeyringStore[T]) Delete(clientID string) error {
 	err := keyring.Delete(k.ServiceName, clientID)
 	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		return fmt.Errorf("failed to delete from keyring: %w", err)
@@ -77,6 +73,6 @@ func (k *KeyringStore) Delete(clientID string) error {
 }
 
 // String returns a description of this store.
-func (k *KeyringStore) String() string {
+func (k *KeyringStore[T]) String() string {
 	return "keyring: " + k.ServiceName
 }

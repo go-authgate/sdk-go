@@ -8,40 +8,30 @@ import (
 	"slices"
 )
 
-// validateToken checks that storage is non-nil and has a non-empty ClientID.
-func validateToken(storage *Token) error {
-	if storage == nil {
-		return ErrNilToken
-	}
-	if storage.ClientID == "" {
-		return ErrEmptyClientID
-	}
-	return nil
+// storageMap manages encoded values for multiple clients.
+type storageMap struct {
+	Data map[string]string `json:"data"` // clientID -> encoded value
 }
 
-// tokenStorageMap manages tokens for multiple clients.
-type tokenStorageMap struct {
-	Tokens map[string]*Token `json:"tokens"` // key = client_id
-}
-
-// FileStore stores tokens in a JSON file with file locking and atomic writes.
-type FileStore struct {
+// FileStore stores values in a JSON file with file locking and atomic writes.
+type FileStore[T any] struct {
 	FilePath string
+	codec    Codec[T]
 }
 
-// NewFileStore creates a new FileStore.
-func NewFileStore(filePath string) *FileStore {
-	return &FileStore{FilePath: filePath}
+// NewFileStore creates a new FileStore with the given codec.
+func NewFileStore[T any](filePath string, codec Codec[T]) *FileStore[T] {
+	return &FileStore[T]{FilePath: filePath, codec: codec}
 }
 
-// readStorageMap reads and unmarshals the token storage map from the file.
+// readStorageMap reads and unmarshals the storage map from the file.
 // Returns an empty initialized map if the file does not exist.
-func (f *FileStore) readStorageMap() (tokenStorageMap, error) {
-	var m tokenStorageMap
+func (f *FileStore[T]) readStorageMap() (storageMap, error) {
+	var m storageMap
 	data, err := os.ReadFile(f.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			m.Tokens = make(map[string]*Token)
+			m.Data = make(map[string]string)
 			return m, nil
 		}
 		return m, fmt.Errorf("failed to read token file: %w", err)
@@ -50,22 +40,22 @@ func (f *FileStore) readStorageMap() (tokenStorageMap, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return m, fmt.Errorf("failed to parse token file: %w", err)
 	}
-	if m.Tokens == nil {
-		m.Tokens = make(map[string]*Token)
+	if m.Data == nil {
+		m.Data = make(map[string]string)
 	}
 	return m, nil
 }
 
 // ensureDir creates the parent directory of the token file if it does not exist.
-func (f *FileStore) ensureDir() error {
+func (f *FileStore[T]) ensureDir() error {
 	if err := os.MkdirAll(filepath.Dir(f.FilePath), 0o700); err != nil {
 		return fmt.Errorf("failed to create token directory: %w", err)
 	}
 	return nil
 }
 
-// writeStorageMap marshals and atomically writes the token storage map to the file.
-func (f *FileStore) writeStorageMap(m tokenStorageMap) error {
+// writeStorageMap marshals and atomically writes the storage map to the file.
+func (f *FileStore[T]) writeStorageMap(m storageMap) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
@@ -85,7 +75,7 @@ func (f *FileStore) writeStorageMap(m tokenStorageMap) error {
 }
 
 // withFileLock acquires a file lock, runs fn, and releases the lock.
-func (f *FileStore) withFileLock(fn func() error) error {
+func (f *FileStore[T]) withFileLock(fn func() error) error {
 	lock, err := acquireFileLock(f.FilePath)
 	if err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
@@ -95,26 +85,32 @@ func (f *FileStore) withFileLock(fn func() error) error {
 	return fn()
 }
 
-// Load loads tokens from the file for the given client ID.
-func (f *FileStore) Load(clientID string) (*Token, error) {
+// Load loads data from the file for the given client ID.
+func (f *FileStore[T]) Load(clientID string) (T, error) {
+	var zero T
 	m, err := f.readStorageMap()
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 
-	storage, ok := m.Tokens[clientID]
+	encoded, ok := m.Data[clientID]
 	if !ok {
-		return nil, ErrNotFound
+		return zero, ErrNotFound
 	}
 
-	return storage, nil
+	return f.codec.Decode(encoded)
 }
 
-// Save saves tokens to the file, merging with existing tokens for other clients.
+// Save saves data to the file for the given client ID.
 // Uses file locking to prevent race conditions.
 // Automatically creates parent directories if they do not exist.
-func (f *FileStore) Save(storage *Token) error {
-	if err := validateToken(storage); err != nil {
+func (f *FileStore[T]) Save(clientID string, data T) error {
+	if clientID == "" {
+		return ErrEmptyClientID
+	}
+
+	encoded, err := f.codec.Encode(data)
+	if err != nil {
 		return err
 	}
 
@@ -128,38 +124,38 @@ func (f *FileStore) Save(storage *Token) error {
 			return err
 		}
 
-		m.Tokens[storage.ClientID] = storage
+		m.Data[clientID] = encoded
 
 		return f.writeStorageMap(m)
 	})
 }
 
-// Delete removes tokens for the given client ID from the file.
-func (f *FileStore) Delete(clientID string) error {
+// Delete removes data for the given client ID from the file.
+func (f *FileStore[T]) Delete(clientID string) error {
 	return f.withFileLock(func() error {
 		m, err := f.readStorageMap()
 		if err != nil {
 			return err
 		}
 
-		if _, ok := m.Tokens[clientID]; !ok {
+		if _, ok := m.Data[clientID]; !ok {
 			return nil
 		}
 
-		delete(m.Tokens, clientID)
+		delete(m.Data, clientID)
 
 		return f.writeStorageMap(m)
 	})
 }
 
 // List returns all stored client IDs, sorted alphabetically.
-func (f *FileStore) List() ([]string, error) {
+func (f *FileStore[T]) List() ([]string, error) {
 	m, err := f.readStorageMap()
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(m.Tokens))
-	for id := range m.Tokens {
+	ids := make([]string, 0, len(m.Data))
+	for id := range m.Data {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
@@ -167,6 +163,6 @@ func (f *FileStore) List() ([]string, error) {
 }
 
 // String returns a description of this store.
-func (f *FileStore) String() string {
+func (f *FileStore[T]) String() string {
 	return "file: " + f.FilePath
 }

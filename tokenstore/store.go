@@ -8,16 +8,13 @@ import (
 // ErrNotFound indicates that no token was found for the given client ID.
 var ErrNotFound = errors.New("token not found")
 
-// ErrNilToken is returned when a nil Token is passed to Save.
-var ErrNilToken = errors.New("token cannot be nil")
-
-// ErrEmptyClientID is returned when a Token with an empty ClientID is passed to Save.
+// ErrEmptyClientID is returned when an empty client ID is passed to Save.
 var ErrEmptyClientID = errors.New("client ID cannot be empty")
 
-// Store defines the interface for loading, saving, and deleting OAuth tokens.
-type Store interface {
-	Load(clientID string) (*Token, error)
-	Save(storage *Token) error
+// Store defines the interface for loading, saving, and deleting data by client ID.
+type Store[T any] interface {
+	Load(clientID string) (T, error)
+	Save(clientID string, data T) error
 	Delete(clientID string) error
 	String() string
 }
@@ -45,4 +42,29 @@ func (t *Token) IsExpired() bool {
 // IsValid reports whether the token has a non-empty access token and is not expired.
 func (t *Token) IsValid() bool {
 	return t.AccessToken != "" && !t.IsExpired()
+}
+
+// NewTokenFileStore creates a FileStore for Token values using JSON encoding.
+func NewTokenFileStore(filePath string) *FileStore[Token] {
+	return NewFileStore[Token](filePath, JSONCodec[Token]{})
+}
+
+// NewTokenKeyringStore creates a KeyringStore for Token values using JSON encoding.
+func NewTokenKeyringStore(serviceName string) *KeyringStore[Token] {
+	return NewKeyringStore[Token](serviceName, JSONCodec[Token]{})
+}
+
+// NewStringFileStore creates a FileStore for plain string values.
+func NewStringFileStore(filePath string) *FileStore[string] {
+	return NewFileStore[string](filePath, StringCodec{})
+}
+
+// NewStringKeyringStore creates a KeyringStore for plain string values.
+func NewStringKeyringStore(serviceName string) *KeyringStore[string] {
+	return NewKeyringStore[string](serviceName, StringCodec{})
+}
+
+// DefaultTokenSecureStore creates a SecureStore for Token values with sensible defaults.
+func DefaultTokenSecureStore(serviceName, filePath string) *SecureStore[Token] {
+	return DefaultSecureStore[Token](serviceName, filePath, JSONCodec[Token]{})
 }

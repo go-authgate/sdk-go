@@ -10,17 +10,17 @@ import (
 )
 
 func TestReadStorageMap_FileNotExist(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "missing.json"))
+	store := NewFileStore[Token](filepath.Join(t.TempDir(), "missing.json"), JSONCodec[Token]{})
 
 	m, err := store.readStorageMap()
 	if err != nil {
 		t.Fatalf("readStorageMap() error = %v", err)
 	}
-	if m.Tokens == nil {
-		t.Fatal("Tokens map should be initialized, got nil")
+	if m.Data == nil {
+		t.Fatal("Data map should be initialized, got nil")
 	}
-	if len(m.Tokens) != 0 {
-		t.Errorf("Tokens map should be empty, got %d entries", len(m.Tokens))
+	if len(m.Data) != 0 {
+		t.Errorf("Data map should be empty, got %d entries", len(m.Data))
 	}
 }
 
@@ -28,21 +28,32 @@ func TestReadStorageMap_ValidFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
 
-	m := tokenStorageMap{Tokens: map[string]*Token{
-		"client-1": {AccessToken: "tok-1", ClientID: "client-1"},
+	codec := JSONCodec[Token]{}
+	encoded, err := codec.Encode(Token{AccessToken: "tok-1", ClientID: "client-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := storageMap{Data: map[string]string{
+		"client-1": encoded,
 	}}
 	data, _ := json.MarshalIndent(m, "", "  ")
 	if err := os.WriteFile(fp, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, codec)
 	got, err := store.readStorageMap()
 	if err != nil {
 		t.Fatalf("readStorageMap() error = %v", err)
 	}
-	if got.Tokens["client-1"].AccessToken != "tok-1" {
-		t.Errorf("AccessToken = %v, want tok-1", got.Tokens["client-1"].AccessToken)
+
+	decoded, err := codec.Decode(got.Data["client-1"])
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if decoded.AccessToken != "tok-1" {
+		t.Errorf("AccessToken = %v, want tok-1", decoded.AccessToken)
 	}
 }
 
@@ -53,38 +64,38 @@ func TestReadStorageMap_InvalidJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 	_, err := store.readStorageMap()
 	if err == nil {
 		t.Fatal("readStorageMap() should return error for invalid JSON")
 	}
 }
 
-func TestReadStorageMap_NullTokensField(t *testing.T) {
+func TestReadStorageMap_NullDataField(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	if err := os.WriteFile(fp, []byte(`{"tokens": null}`), 0o600); err != nil {
+	if err := os.WriteFile(fp, []byte(`{"data": null}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 	m, err := store.readStorageMap()
 	if err != nil {
 		t.Fatalf("readStorageMap() error = %v", err)
 	}
-	if m.Tokens == nil {
-		t.Fatal("Tokens map should be initialized even when JSON has null")
+	if m.Data == nil {
+		t.Fatal("Data map should be initialized even when JSON has null")
 	}
 }
 
 func TestWriteStorageMap_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	codec := JSONCodec[Token]{}
+	store := NewFileStore[Token](fp, codec)
 
-	m := tokenStorageMap{Tokens: map[string]*Token{
-		"c1": {AccessToken: "a1", ClientID: "c1"},
-	}}
+	encoded, _ := codec.Encode(Token{AccessToken: "a1", ClientID: "c1"})
+	m := storageMap{Data: map[string]string{"c1": encoded}}
 	if err := store.writeStorageMap(m); err != nil {
 		t.Fatalf("writeStorageMap() error = %v", err)
 	}
@@ -93,30 +104,34 @@ func TestWriteStorageMap_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
-	var got tokenStorageMap
+	var got storageMap
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if got.Tokens["c1"].AccessToken != "a1" {
-		t.Errorf("AccessToken = %v, want a1", got.Tokens["c1"].AccessToken)
+
+	decoded, err := codec.Decode(got.Data["c1"])
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if decoded.AccessToken != "a1" {
+		t.Errorf("AccessToken = %v, want a1", decoded.AccessToken)
 	}
 }
 
 func TestWriteStorageMap_OverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	codec := JSONCodec[Token]{}
+	store := NewFileStore[Token](fp, codec)
 
-	m1 := tokenStorageMap{Tokens: map[string]*Token{
-		"c1": {AccessToken: "v1", ClientID: "c1"},
-	}}
+	enc1, _ := codec.Encode(Token{AccessToken: "v1", ClientID: "c1"})
+	m1 := storageMap{Data: map[string]string{"c1": enc1}}
 	if err := store.writeStorageMap(m1); err != nil {
 		t.Fatal(err)
 	}
 
-	m2 := tokenStorageMap{Tokens: map[string]*Token{
-		"c1": {AccessToken: "v2", ClientID: "c1"},
-	}}
+	enc2, _ := codec.Encode(Token{AccessToken: "v2", ClientID: "c1"})
+	m2 := storageMap{Data: map[string]string{"c1": enc2}}
 	if err := store.writeStorageMap(m2); err != nil {
 		t.Fatal(err)
 	}
@@ -125,17 +140,21 @@ func TestWriteStorageMap_OverwritesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Tokens["c1"].AccessToken != "v2" {
-		t.Errorf("AccessToken = %v, want v2", got.Tokens["c1"].AccessToken)
+	decoded, err := codec.Decode(got.Data["c1"])
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if decoded.AccessToken != "v2" {
+		t.Errorf("AccessToken = %v, want v2", decoded.AccessToken)
 	}
 }
 
 func TestWriteStorageMap_NoTempFileLeftOnSuccess(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 
-	m := tokenStorageMap{Tokens: make(map[string]*Token)}
+	m := storageMap{Data: make(map[string]string)}
 	if err := store.writeStorageMap(m); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +167,7 @@ func TestWriteStorageMap_NoTempFileLeftOnSuccess(t *testing.T) {
 func TestWithFileLock_ExecutesFn(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 
 	called := false
 	err := store.withFileLock(func() error {
@@ -166,7 +185,7 @@ func TestWithFileLock_ExecutesFn(t *testing.T) {
 func TestWithFileLock_PropagatesError(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 
 	sentinel := errors.New("test error")
 	err := store.withFileLock(func() error {
@@ -180,7 +199,7 @@ func TestWithFileLock_PropagatesError(t *testing.T) {
 func TestWithFileLock_ReleasesLockAfterFn(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 
 	err := store.withFileLock(func() error {
 		return nil
@@ -201,7 +220,7 @@ func TestWithFileLock_ReleasesLockAfterFn(t *testing.T) {
 func TestWithFileLock_ReleasesLockOnError(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 
 	_ = store.withFileLock(func() error {
 		return errors.New("fail")
@@ -219,7 +238,7 @@ func TestWithFileLock_ReleasesLockOnError(t *testing.T) {
 func TestWithFileLock_MutualExclusion(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -255,10 +274,10 @@ func TestWithFileLock_MutualExclusion(t *testing.T) {
 func TestDeleteSkipsWriteWhenKeyAbsent(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "tokens.json")
-	store := NewFileStore(fp)
+	store := NewFileStore[Token](fp, JSONCodec[Token]{})
 
 	// Save one token
-	if err := store.Save(&Token{AccessToken: "tok", ClientID: "c1"}); err != nil {
+	if err := store.Save("c1", Token{AccessToken: "tok", ClientID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
 
