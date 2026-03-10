@@ -1,4 +1,4 @@
-package tokenstore
+package credstore
 
 import (
 	"errors"
@@ -16,7 +16,11 @@ type KeyringStore[T any] struct {
 }
 
 // NewKeyringStore creates a new KeyringStore with the given codec.
+// Panics if codec is nil.
 func NewKeyringStore[T any](serviceName string, codec Codec[T]) *KeyringStore[T] {
+	if codec == nil {
+		panic("credstore: NewKeyringStore called with nil codec")
+	}
 	return &KeyringStore[T]{ServiceName: serviceName, codec: codec}
 }
 
@@ -42,7 +46,11 @@ func (k *KeyringStore[T]) Load(clientID string) (T, error) {
 		return zero, fmt.Errorf("failed to read from keyring: %w", err)
 	}
 
-	return k.codec.Decode(data)
+	decoded, err := k.codec.Decode(data)
+	if err != nil {
+		return zero, fmt.Errorf("failed to decode keyring data: %w", err)
+	}
+	return decoded, nil
 }
 
 // Save saves data to the keyring for the given client ID.
@@ -53,7 +61,7 @@ func (k *KeyringStore[T]) Save(clientID string, data T) error {
 
 	encoded, err := k.codec.Encode(data)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to encode data for keyring: %w", err)
 	}
 
 	if err := keyring.Set(k.ServiceName, clientID, encoded); err != nil {

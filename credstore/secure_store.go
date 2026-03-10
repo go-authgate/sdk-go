@@ -1,4 +1,4 @@
-package tokenstore
+package credstore
 
 // Prober is an optional interface that a Store can implement to test
 // whether its backend is available.

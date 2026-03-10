@@ -1,4 +1,4 @@
-package tokenstore
+package credstore
 
 import (
 	"encoding/json"
@@ -20,7 +20,11 @@ type FileStore[T any] struct {
 }
 
 // NewFileStore creates a new FileStore with the given codec.
+// Panics if codec is nil.
 func NewFileStore[T any](filePath string, codec Codec[T]) *FileStore[T] {
+	if codec == nil {
+		panic("credstore: NewFileStore called with nil codec")
+	}
 	return &FileStore[T]{FilePath: filePath, codec: codec}
 }
 
@@ -34,11 +38,11 @@ func (f *FileStore[T]) readStorageMap() (storageMap, error) {
 			m.Data = make(map[string]string)
 			return m, nil
 		}
-		return m, fmt.Errorf("failed to read token file: %w", err)
+		return m, fmt.Errorf("failed to read file %q: %w", f.FilePath, err)
 	}
 
 	if err := json.Unmarshal(data, &m); err != nil {
-		return m, fmt.Errorf("failed to parse token file: %w", err)
+		return m, fmt.Errorf("failed to parse file %q: %w", f.FilePath, err)
 	}
 	if m.Data == nil {
 		m.Data = make(map[string]string)
@@ -46,10 +50,10 @@ func (f *FileStore[T]) readStorageMap() (storageMap, error) {
 	return m, nil
 }
 
-// ensureDir creates the parent directory of the token file if it does not exist.
+// ensureDir creates the parent directory of the store file if it does not exist.
 func (f *FileStore[T]) ensureDir() error {
 	if err := os.MkdirAll(filepath.Dir(f.FilePath), 0o700); err != nil {
-		return fmt.Errorf("failed to create token directory: %w", err)
+		return fmt.Errorf("failed to create store directory: %w", err)
 	}
 	return nil
 }
@@ -98,7 +102,11 @@ func (f *FileStore[T]) Load(clientID string) (T, error) {
 		return zero, ErrNotFound
 	}
 
-	return f.codec.Decode(encoded)
+	decoded, err := f.codec.Decode(encoded)
+	if err != nil {
+		return zero, fmt.Errorf("failed to decode value from %q: %w", f.FilePath, err)
+	}
+	return decoded, nil
 }
 
 // Save saves data to the file for the given client ID.
@@ -111,7 +119,7 @@ func (f *FileStore[T]) Save(clientID string, data T) error {
 
 	encoded, err := f.codec.Encode(data)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to encode value for storage: %w", err)
 	}
 
 	if err := f.ensureDir(); err != nil {

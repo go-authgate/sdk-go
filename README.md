@@ -16,9 +16,9 @@ go get github.com/go-authgate/sdk-go
 
 ## Packages
 
-| Package                   | Description                                                                    |
-| ------------------------- | ------------------------------------------------------------------------------ |
-| [tokenstore](tokenstore/) | Secure OAuth token storage with OS keyring integration and file-based fallback |
+| Package                 | Description                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| [credstore](credstore/) | Secure credential storage with OS keyring integration and file-based fallback |
 
 ## Development
 

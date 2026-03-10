@@ -1,12 +1,12 @@
-package tokenstore
+package credstore
 
 import (
 	"errors"
 	"time"
 )
 
-// ErrNotFound indicates that no token was found for the given client ID.
-var ErrNotFound = errors.New("token not found")
+// ErrNotFound indicates that no data was found for the given client ID.
+var ErrNotFound = errors.New("not found")
 
 // ErrEmptyClientID is returned when an empty client ID is passed to Save.
 var ErrEmptyClientID = errors.New("client ID cannot be empty")

@@ -1,18 +1,18 @@
-package tokenstore_test
+package credstore_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/go-authgate/sdk-go/tokenstore"
+	"github.com/go-authgate/sdk-go/credstore"
 	"github.com/zalando/go-keyring"
 )
 
 func TestKeyringStore_SaveAndLoad(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("test-service")
+	store := credstore.NewTokenKeyringStore("test-service")
 
-	tok := tokenstore.Token{
+	tok := credstore.Token{
 		AccessToken:  "test-access-token",
 		RefreshToken: "test-refresh-token",
 		TokenType:    "Bearer",
@@ -42,19 +42,19 @@ func TestKeyringStore_SaveAndLoad(t *testing.T) {
 
 func TestKeyringStore_LoadNotFound(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("test-service")
+	store := credstore.NewTokenKeyringStore("test-service")
 
 	_, err := store.Load("nonexistent")
-	if err != tokenstore.ErrNotFound {
+	if err != credstore.ErrNotFound {
 		t.Errorf("Load() error = %v, want ErrNotFound", err)
 	}
 }
 
 func TestKeyringStore_Delete(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("test-service")
+	store := credstore.NewTokenKeyringStore("test-service")
 
-	tok := tokenstore.Token{
+	tok := credstore.Token{
 		AccessToken: "test-token",
 		ClientID:    "test-client",
 	}
@@ -67,14 +67,14 @@ func TestKeyringStore_Delete(t *testing.T) {
 	}
 
 	_, err := store.Load("test-client")
-	if err != tokenstore.ErrNotFound {
+	if err != credstore.ErrNotFound {
 		t.Errorf("Load() after Delete() error = %v, want ErrNotFound", err)
 	}
 }
 
 func TestKeyringStore_DeleteNonexistent(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("test-service")
+	store := credstore.NewTokenKeyringStore("test-service")
 
 	// Should not error when deleting nonexistent key
 	if err := store.Delete("nonexistent"); err != nil {
@@ -84,16 +84,16 @@ func TestKeyringStore_DeleteNonexistent(t *testing.T) {
 
 func TestKeyringStore_OverwriteExisting(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("test-service")
+	store := credstore.NewTokenKeyringStore("test-service")
 
-	if err := store.Save("test-client", tokenstore.Token{
+	if err := store.Save("test-client", credstore.Token{
 		AccessToken: "token-v1",
 		ClientID:    "test-client",
 	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	if err := store.Save("test-client", tokenstore.Token{
+	if err := store.Save("test-client", credstore.Token{
 		AccessToken: "token-v2",
 		ClientID:    "test-client",
 	}); err != nil {
@@ -111,10 +111,10 @@ func TestKeyringStore_OverwriteExisting(t *testing.T) {
 
 func TestKeyringStore_MultipleClients(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("test-service")
+	store := credstore.NewTokenKeyringStore("test-service")
 
 	for _, id := range []string{"client-1", "client-2"} {
-		if err := store.Save(id, tokenstore.Token{
+		if err := store.Save(id, credstore.Token{
 			AccessToken: "token-" + id,
 			ClientID:    id,
 		}); err != nil {
@@ -136,16 +136,16 @@ func TestKeyringStore_MultipleClients(t *testing.T) {
 
 func TestKeyringStore_SaveEmptyClientID(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("test-service")
+	store := credstore.NewTokenKeyringStore("test-service")
 
-	err := store.Save("", tokenstore.Token{AccessToken: "tok"})
-	if err != tokenstore.ErrEmptyClientID {
+	err := store.Save("", credstore.Token{AccessToken: "tok"})
+	if err != credstore.ErrEmptyClientID {
 		t.Errorf("Save(empty clientID) error = %v, want ErrEmptyClientID", err)
 	}
 }
 
 func TestKeyringStore_String(t *testing.T) {
-	store := tokenstore.NewTokenKeyringStore("my-service")
+	store := credstore.NewTokenKeyringStore("my-service")
 	expected := "keyring: my-service"
 	if store.String() != expected {
 		t.Errorf("String() = %v, want %v", store.String(), expected)
@@ -154,7 +154,7 @@ func TestKeyringStore_String(t *testing.T) {
 
 func TestKeyringStore_StringCodec(t *testing.T) {
 	keyring.MockInit()
-	store := tokenstore.NewStringKeyringStore("test-service")
+	store := credstore.NewStringKeyringStore("test-service")
 
 	if err := store.Save("my-client", "eyJhbGciOiJSUzI1NiJ9"); err != nil {
 		t.Fatalf("Save() error = %v", err)

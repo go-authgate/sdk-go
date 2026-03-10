@@ -1,4 +1,4 @@
-package tokenstore_test
+package credstore_test
 
 import (
 	"fmt"
@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-authgate/sdk-go/tokenstore"
+	"github.com/go-authgate/sdk-go/credstore"
 	"github.com/zalando/go-keyring"
 )
 
-func newTestToken(clientID string) tokenstore.Token {
-	return tokenstore.Token{
+func newTestToken(clientID string) credstore.Token {
+	return credstore.Token{
 		AccessToken:  "access-" + clientID,
 		RefreshToken: "refresh-" + clientID,
 		TokenType:    "Bearer",
@@ -23,7 +23,7 @@ func newTestToken(clientID string) tokenstore.Token {
 // --- FileStore benchmarks ---
 
 func BenchmarkFileStore_Save(b *testing.B) {
-	store := tokenstore.NewTokenFileStore(filepath.Join(b.TempDir(), "tokens.json"))
+	store := credstore.NewTokenFileStore(filepath.Join(b.TempDir(), "tokens.json"))
 	tok := newTestToken("client-1")
 
 	b.ResetTimer()
@@ -35,7 +35,7 @@ func BenchmarkFileStore_Save(b *testing.B) {
 }
 
 func BenchmarkFileStore_Load(b *testing.B) {
-	store := tokenstore.NewTokenFileStore(filepath.Join(b.TempDir(), "tokens.json"))
+	store := credstore.NewTokenFileStore(filepath.Join(b.TempDir(), "tokens.json"))
 	tok := newTestToken("client-1")
 	if err := store.Save(tok.ClientID, tok); err != nil {
 		b.Fatal(err)
@@ -51,7 +51,7 @@ func BenchmarkFileStore_Load(b *testing.B) {
 
 func BenchmarkFileStore_Delete(b *testing.B) {
 	dir := b.TempDir()
-	store := tokenstore.NewTokenFileStore(filepath.Join(dir, "tokens.json"))
+	store := credstore.NewTokenFileStore(filepath.Join(dir, "tokens.json"))
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
@@ -68,7 +68,7 @@ func BenchmarkFileStore_Delete(b *testing.B) {
 func BenchmarkFileStore_SaveMultipleClients(b *testing.B) {
 	for _, n := range []int{1, 10, 50} {
 		b.Run(fmt.Sprintf("clients=%d", n), func(b *testing.B) {
-			store := tokenstore.NewTokenFileStore(filepath.Join(b.TempDir(), "tokens.json"))
+			store := credstore.NewTokenFileStore(filepath.Join(b.TempDir(), "tokens.json"))
 			// Pre-populate with n-1 clients
 			for i := range n - 1 {
 				tok := newTestToken(fmt.Sprintf("pre-%d", i))
@@ -92,7 +92,7 @@ func BenchmarkFileStore_SaveMultipleClients(b *testing.B) {
 
 func BenchmarkKeyringStore_Save(b *testing.B) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("bench-service")
+	store := credstore.NewTokenKeyringStore("bench-service")
 	tok := newTestToken("client-1")
 
 	b.ResetTimer()
@@ -105,7 +105,7 @@ func BenchmarkKeyringStore_Save(b *testing.B) {
 
 func BenchmarkKeyringStore_Load(b *testing.B) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("bench-service")
+	store := credstore.NewTokenKeyringStore("bench-service")
 	tok := newTestToken("client-1")
 	if err := store.Save(tok.ClientID, tok); err != nil {
 		b.Fatal(err)
@@ -121,7 +121,7 @@ func BenchmarkKeyringStore_Load(b *testing.B) {
 
 func BenchmarkKeyringStore_Delete(b *testing.B) {
 	keyring.MockInit()
-	store := tokenstore.NewTokenKeyringStore("bench-service")
+	store := credstore.NewTokenKeyringStore("bench-service")
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {

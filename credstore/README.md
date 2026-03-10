@@ -1,4 +1,4 @@
-# tokenstore
+# credstore
 
 Secure storage for OAuth tokens and arbitrary credentials, with OS keyring integration and file-based fallback.
 
@@ -20,17 +20,17 @@ import (
   "fmt"
   "time"
 
-  "github.com/go-authgate/sdk-go/tokenstore"
+  "github.com/go-authgate/sdk-go/credstore"
 )
 
 func main() {
   // Create a secure store with keyring + file fallback (one-liner)
-  store := tokenstore.DefaultTokenSecureStore("my-app", "/tmp/my-app-tokens.json")
+  store := credstore.DefaultTokenSecureStore("my-app", "/tmp/my-app-tokens.json")
 
   fmt.Println("Using backend:", store.String())
 
   // Save a token
-  token := tokenstore.Token{
+  token := credstore.Token{
     AccessToken:  "eyJhbGciOi...",
     RefreshToken: "dGhpcyBpcyBh...",
     TokenType:    "Bearer",
@@ -117,7 +117,7 @@ type Lister interface {
 Use a type assertion to check listing support at runtime:
 
 ```go
-if lister, ok := store.(tokenstore.Lister); ok {
+if lister, ok := store.(credstore.Lister); ok {
   ids, err := lister.List()
   if err != nil {
     panic(err)
@@ -134,14 +134,18 @@ Stores data in a JSON file with file locking and atomic writes. Parent directori
 
 ```go
 // Token store (convenience constructor)
-store := tokenstore.NewTokenFileStore("~/.config/my-app/tokens.json")
+store := credstore.NewTokenFileStore("~/.config/my-app/tokens.json")
 
 // Plain string store
-store := tokenstore.NewStringFileStore("~/.config/my-app/tokens.json")
+store := credstore.NewStringFileStore("~/.config/my-app/tokens.json")
 
 // Custom type with JSON encoding
-store := tokenstore.NewFileStore[MyCredentials]("~/.config/my-app/creds.json", tokenstore.JSONCodec[MyCredentials]{})
+store := credstore.NewFileStore[MyCredentials]("~/.config/my-app/creds.json", credstore.JSONCodec[MyCredentials]{})
 ```
+
+> **⚠ Breaking change (file format):** The on-disk JSON format changed from
+> `{"tokens":{...}}` to `{"data":{...}}`. Files written by a previous version
+> will fail to parse and must be deleted before first use.
 
 ### KeyringStore
 
@@ -149,10 +153,10 @@ Stores data in the OS keyring. Implements the `Prober` interface to test keyring
 
 ```go
 // Token store (convenience constructor)
-store := tokenstore.NewTokenKeyringStore("my-app")
+store := credstore.NewTokenKeyringStore("my-app")
 
 // Plain string store
-store := tokenstore.NewStringKeyringStore("my-app")
+store := credstore.NewStringKeyringStore("my-app")
 
 // Check if keyring is available
 if store.Probe() {
@@ -166,12 +170,12 @@ A composite store that automatically selects the best available backend. If the 
 
 ```go
 // Quick setup with defaults (Token)
-store := tokenstore.DefaultTokenSecureStore("my-app", "/path/to/tokens.json")
+store := credstore.DefaultTokenSecureStore("my-app", "/path/to/tokens.json")
 
 // Or configure manually
-kr := tokenstore.NewTokenKeyringStore("my-app")
-file := tokenstore.NewTokenFileStore("/path/to/tokens.json")
-store := tokenstore.NewSecureStore(kr, file)
+kr := credstore.NewTokenKeyringStore("my-app")
+file := credstore.NewTokenFileStore("/path/to/tokens.json")
+store := credstore.NewSecureStore(kr, file)
 
 if store.UseKeyring() {
   fmt.Println("Using OS keyring")
@@ -180,7 +184,7 @@ if store.UseKeyring() {
 }
 
 // Generic setup with custom codec
-store := tokenstore.DefaultSecureStore[MyCredentials]("my-app", "/path/to/creds.json", tokenstore.JSONCodec[MyCredentials]{})
+store := credstore.DefaultSecureStore[MyCredentials]("my-app", "/path/to/creds.json", credstore.JSONCodec[MyCredentials]{})
 ```
 
 ### Codec
@@ -209,7 +213,7 @@ type EncryptedCodec struct{ key []byte }
 func (c EncryptedCodec) Encode(v string) (string, error) { /* encrypt */ }
 func (c EncryptedCodec) Decode(s string) (string, error) { /* decrypt */ }
 
-store := tokenstore.NewFileStore[string]("/path/to/store.json", EncryptedCodec{key: myKey})
+store := credstore.NewFileStore[string]("/path/to/store.json", EncryptedCodec{key: myKey})
 ```
 
 ### Error Handling
@@ -218,8 +222,8 @@ store := tokenstore.NewFileStore[string]("/path/to/store.json", EncryptedCodec{k
 import "errors"
 
 _, err := store.Load("client-id")
-if errors.Is(err, tokenstore.ErrNotFound) {
-  // Token does not exist — trigger a new OAuth flow
+if errors.Is(err, credstore.ErrNotFound) {
+  // Data not found — trigger a new OAuth flow
 }
 ```
 
@@ -255,5 +259,5 @@ Allocations grow linearly because the entire data map is deserialized and re-ser
 Run benchmarks yourself:
 
 ```bash
-go test ./tokenstore/... -bench=. -benchmem -count=3 -run=^$
+go test ./credstore/... -bench=. -benchmem -count=3 -run=^$
 ```

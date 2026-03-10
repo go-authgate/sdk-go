@@ -1,4 +1,4 @@
-package tokenstore
+package credstore
 
 import (
 	"encoding/json"
@@ -37,7 +37,10 @@ func TestReadStorageMap_ValidFile(t *testing.T) {
 	m := storageMap{Data: map[string]string{
 		"client-1": encoded,
 	}}
-	data, _ := json.MarshalIndent(m, "", "  ")
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(fp, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +97,10 @@ func TestWriteStorageMap_CreatesFile(t *testing.T) {
 	codec := JSONCodec[Token]{}
 	store := NewFileStore[Token](fp, codec)
 
-	encoded, _ := codec.Encode(Token{AccessToken: "a1", ClientID: "c1"})
+	encoded, err := codec.Encode(Token{AccessToken: "a1", ClientID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := storageMap{Data: map[string]string{"c1": encoded}}
 	if err := store.writeStorageMap(m); err != nil {
 		t.Fatalf("writeStorageMap() error = %v", err)
@@ -124,13 +130,19 @@ func TestWriteStorageMap_OverwritesExisting(t *testing.T) {
 	codec := JSONCodec[Token]{}
 	store := NewFileStore[Token](fp, codec)
 
-	enc1, _ := codec.Encode(Token{AccessToken: "v1", ClientID: "c1"})
+	enc1, err := codec.Encode(Token{AccessToken: "v1", ClientID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	m1 := storageMap{Data: map[string]string{"c1": enc1}}
 	if err := store.writeStorageMap(m1); err != nil {
 		t.Fatal(err)
 	}
 
-	enc2, _ := codec.Encode(Token{AccessToken: "v2", ClientID: "c1"})
+	enc2, err := codec.Encode(Token{AccessToken: "v2", ClientID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	m2 := storageMap{Data: map[string]string{"c1": enc2}}
 	if err := store.writeStorageMap(m2); err != nil {
 		t.Fatal(err)

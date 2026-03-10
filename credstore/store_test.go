@@ -1,10 +1,10 @@
-package tokenstore_test
+package credstore_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/go-authgate/sdk-go/tokenstore"
+	"github.com/go-authgate/sdk-go/credstore"
 )
 
 func TestToken_IsExpired(t *testing.T) {
@@ -32,7 +32,7 @@ func TestToken_IsExpired(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			token := &tokenstore.Token{
+			token := &credstore.Token{
 				AccessToken: "test-token",
 				ExpiresAt:   tt.expiresAt,
 			}
@@ -84,7 +84,7 @@ func TestToken_IsValid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			token := &tokenstore.Token{
+			token := &credstore.Token{
 				AccessToken: tt.accessToken,
 				ExpiresAt:   tt.expiresAt,
 			}
