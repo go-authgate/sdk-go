@@ -3,12 +3,15 @@ package credstore
 import (
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
 
 // mockStore is a simple mock implementing Store[T] for testing.
+// A mutex guards data so mockStore is safe for concurrent use in race tests.
 type mockStore[T any] struct {
+	mu   sync.Mutex
 	data map[string]T
 	name string
 	err  error
@@ -22,6 +25,8 @@ func newMockStore[T any](name string) *mockStore[T] {
 }
 
 func (m *mockStore[T]) Load(clientID string) (T, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		var zero T
 		return zero, m.err
@@ -35,6 +40,8 @@ func (m *mockStore[T]) Load(clientID string) (T, error) {
 }
 
 func (m *mockStore[T]) Save(clientID string, data T) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		return m.err
 	}
@@ -43,6 +50,8 @@ func (m *mockStore[T]) Save(clientID string, data T) error {
 }
 
 func (m *mockStore[T]) Delete(clientID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		return m.err
 	}
@@ -223,6 +232,143 @@ func TestSecureStore_ListNotSupported(t *testing.T) {
 	if _, ok := any(store).(Lister); ok {
 		t.Fatal("*SecureStore should not satisfy Lister")
 	}
+}
+
+func TestSecureStore_Refresh_NoChangeWhenKeyringStillAvailable(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	changed := store.Refresh()
+
+	if changed {
+		t.Error("Refresh() = true, want false (keyring still available)")
+	}
+	if !store.UseKeyring() {
+		t.Error("UseKeyring() = false, want true after no-op refresh")
+	}
+}
+
+func TestSecureStore_Refresh_SwitchesToFileWhenKeyringBecomesUnavailable(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	kr.probeResult = false
+	changed := store.Refresh()
+
+	if !changed {
+		t.Error("Refresh() = false, want true (keyring became unavailable)")
+	}
+	if store.UseKeyring() {
+		t.Error("UseKeyring() = true, want false after keyring went down")
+	}
+	if store.String() != "file: test" {
+		t.Errorf("String() = %v, want file: test", store.String())
+	}
+}
+
+func TestSecureStore_Refresh_SwitchesToKeyringWhenKeyringBecomesAvailable(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", false)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	kr.probeResult = true
+	changed := store.Refresh()
+
+	if !changed {
+		t.Error("Refresh() = false, want true (keyring recovered)")
+	}
+	if !store.UseKeyring() {
+		t.Error("UseKeyring() = false, want true after keyring recovered")
+	}
+	if store.String() != "keyring: test" {
+		t.Errorf("String() = %v, want keyring: test", store.String())
+	}
+}
+
+func TestSecureStore_Refresh_NoOpWhenKrNotProber(t *testing.T) {
+	kr := newMockStore[Token]("keyring: test")
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	changed := store.Refresh()
+
+	if changed {
+		t.Error("Refresh() = true, want false (kr does not implement Prober)")
+	}
+	if store.UseKeyring() {
+		t.Error("UseKeyring() = true, want false (non-prober kr always falls back)")
+	}
+}
+
+func TestSecureStore_Refresh_NoChangeWhenFileStillActive(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", false)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	changed := store.Refresh()
+
+	if changed {
+		t.Error("Refresh() = true, want false (file still active, probe still false)")
+	}
+	if store.UseKeyring() {
+		t.Error("UseKeyring() = true, want false")
+	}
+}
+
+func TestSecureStore_Refresh_OperatesOnCorrectBackendAfterSwitch(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", false)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	tok := Token{AccessToken: "file-token", ClientID: "client1"}
+	if err := store.Save(tok.ClientID, tok); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Switch to keyring
+	kr.probeResult = true
+	if !store.Refresh() {
+		t.Fatal("Refresh() = false, want true")
+	}
+
+	// Save to new primary (keyring)
+	tok2 := Token{AccessToken: "keyring-token", ClientID: "client2"}
+	if err := store.Save(tok2.ClientID, tok2); err != nil {
+		t.Fatalf("Save() after switch error = %v", err)
+	}
+
+	if _, ok := kr.data["client2"]; !ok {
+		t.Error("client2 not found in keyring store after switch")
+	}
+	if _, ok := file.data["client2"]; ok {
+		t.Error("client2 should not be in file store after switch")
+	}
+}
+
+func TestSecureStore_Refresh_ConcurrentSafe(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_ = store.Refresh()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.Save("client", Token{AccessToken: "t", ClientID: "client"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = store.Load("client")
+		}()
+	}
+	wg.Wait()
 }
 
 func TestSecureStore_Delete(t *testing.T) {
