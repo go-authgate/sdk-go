@@ -3,12 +3,15 @@ package credstore
 import (
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
 
 // mockStore is a simple mock implementing Store[T] for testing.
+// A mutex guards data so mockStore is safe for concurrent use in race tests.
 type mockStore[T any] struct {
+	mu   sync.Mutex
 	data map[string]T
 	name string
 	err  error
@@ -22,6 +25,8 @@ func newMockStore[T any](name string) *mockStore[T] {
 }
 
 func (m *mockStore[T]) Load(clientID string) (T, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		var zero T
 		return zero, m.err
@@ -35,6 +40,8 @@ func (m *mockStore[T]) Load(clientID string) (T, error) {
 }
 
 func (m *mockStore[T]) Save(clientID string, data T) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		return m.err
 	}
@@ -43,6 +50,8 @@ func (m *mockStore[T]) Save(clientID string, data T) error {
 }
 
 func (m *mockStore[T]) Delete(clientID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		return m.err
 	}
@@ -336,6 +345,30 @@ func TestSecureStore_Refresh_OperatesOnCorrectBackendAfterSwitch(t *testing.T) {
 	if _, ok := file.data["client2"]; ok {
 		t.Error("client2 should not be in file store after switch")
 	}
+}
+
+func TestSecureStore_Refresh_ConcurrentSafe(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file)
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_ = store.Refresh()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.Save("client", Token{AccessToken: "t", ClientID: "client"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = store.Load("client")
+		}()
+	}
+	wg.Wait()
 }
 
 func TestSecureStore_Delete(t *testing.T) {
