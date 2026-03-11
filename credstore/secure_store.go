@@ -8,11 +8,41 @@ type Prober interface {
 	Probe() bool
 }
 
+// BackendChangeFunc is called whenever the active backend changes.
+// backend is the newly-active store's String() description.
+// It fires both when falling back to file storage and when recovering to keyring.
+// Always called outside the mutex lock.
+type BackendChangeFunc func(backend string)
+
+// Diagnostics is a point-in-time snapshot of SecureStore state.
+type Diagnostics struct {
+	Backend    string // active store's String() description
+	UseKeyring bool   // true if keyring is the active backend
+	CanProbe   bool   // true if Refresh() can switch backends
+}
+
+// SecureStoreOption[T] is a functional option for NewSecureStore.
+type SecureStoreOption[T any] func(*SecureStore[T])
+
+// WithBackendChangeHandler registers fn as the backend-change callback.
+// It is called whenever the active backend switches — both on fallback to file
+// and on recovery back to keyring. Passing nil is a no-op.
+func WithBackendChangeHandler[T any](fn BackendChangeFunc) SecureStoreOption[T] {
+	return func(s *SecureStore[T]) {
+		s.onChange = fn
+	}
+}
+
 // DefaultSecureStore creates a SecureStore with the given codec and sensible defaults.
-func DefaultSecureStore[T any](serviceName, filePath string, codec Codec[T]) *SecureStore[T] {
-	kr := NewKeyringStore[T](serviceName, codec)
-	file := NewFileStore[T](filePath, codec)
-	return NewSecureStore[T](kr, file)
+func DefaultSecureStore[T any](
+	serviceName, filePath string,
+	codec Codec[T],
+	opts ...SecureStoreOption[T],
+) *SecureStore[T] {
+	return NewSecureStore[T](
+		NewKeyringStore[T](serviceName, codec),
+		NewFileStore[T](filePath, codec),
+		opts...)
 }
 
 // SecureStore is a composite Store that tries the OS keyring first
@@ -26,18 +56,34 @@ type SecureStore[T any] struct {
 	file       Store[T]
 	prober     Prober // nil if kr does not implement Prober
 	useKeyring bool
+	onChange   BackendChangeFunc // optional; called outside the lock
 }
 
 // NewSecureStore creates a SecureStore. If kr implements Prober and the probe
 // succeeds, kr is used as the primary store. Otherwise, file is used as the
-// fallback. Both stores are retained for use by Refresh(). The caller is
-// responsible for logging when a fallback occurs (check UseKeyring() or String()).
-func NewSecureStore[T any](kr, file Store[T]) *SecureStore[T] {
-	p, _ := kr.(Prober)
-	if p != nil && p.Probe() {
-		return &SecureStore[T]{primary: kr, kr: kr, file: file, prober: p, useKeyring: true}
+// fallback. Both stores are retained for use by Refresh(). The onChange
+// callback (if set via WithBackendChangeHandler) is called when the file backend
+// is selected at construction time.
+func NewSecureStore[T any](kr, file Store[T], opts ...SecureStoreOption[T]) *SecureStore[T] {
+	s := &SecureStore[T]{kr: kr, file: file}
+	s.prober, _ = kr.(Prober)
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s) // apply before probe so callback is registered first
+		}
 	}
-	return &SecureStore[T]{primary: file, kr: kr, file: file, prober: p, useKeyring: false}
+	if s.prober != nil && s.prober.Probe() {
+		s.primary = kr
+		s.useKeyring = true
+		// no callback: keyring is the intended path, not a fallback
+	} else {
+		s.primary = file
+		s.useKeyring = false
+		if s.onChange != nil {
+			s.onChange(file.String()) // safe: struct not yet shared
+		}
+	}
+	return s
 }
 
 // active returns the current primary store under a read lock.
@@ -53,27 +99,33 @@ func (s *SecureStore[T]) active() Store[T] {
 // availability has changed. It returns true if the active backend changed,
 // false if it remained the same. No data is migrated between backends.
 // Probe() is called outside the lock to avoid holding it during a potentially
-// slow OS call.
+// slow OS call. The onChange callback is called outside the lock to prevent
+// deadlocks.
 func (s *SecureStore[T]) Refresh() bool {
 	if s.prober == nil {
 		return false
 	}
 
-	keyringAvailable := s.prober.Probe()
+	keyringAvailable := s.prober.Probe() // outside the lock (slow OS call)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if keyringAvailable == s.useKeyring {
+		s.mu.Unlock()
 		return false
 	}
-
+	var newBackend string
 	if keyringAvailable {
-		s.primary = s.kr
-		s.useKeyring = true
+		s.primary, s.useKeyring = s.kr, true
+		newBackend = s.kr.String()
 	} else {
-		s.primary = s.file
-		s.useKeyring = false
+		s.primary, s.useKeyring = s.file, false
+		newBackend = s.file.String()
+	}
+	cb := s.onChange // capture under the lock
+	s.mu.Unlock()    // release BEFORE calling callback (prevent deadlock)
+
+	if cb != nil {
+		cb(newBackend)
 	}
 	return true
 }
@@ -83,6 +135,17 @@ func (s *SecureStore[T]) UseKeyring() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.useKeyring
+}
+
+// Diagnostic returns a point-in-time snapshot of the SecureStore's backend state.
+func (s *SecureStore[T]) Diagnostic() Diagnostics {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Diagnostics{
+		Backend:    s.primary.String(),
+		UseKeyring: s.useKeyring,
+		CanProbe:   s.prober != nil,
+	}
 }
 
 // Load loads data from the active store.

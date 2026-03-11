@@ -65,6 +65,9 @@ func NewStringKeyringStore(serviceName string) *KeyringStore[string] {
 }
 
 // DefaultTokenSecureStore creates a SecureStore for Token values with sensible defaults.
-func DefaultTokenSecureStore(serviceName, filePath string) *SecureStore[Token] {
-	return DefaultSecureStore[Token](serviceName, filePath, JSONCodec[Token]{})
+func DefaultTokenSecureStore(
+	serviceName, filePath string,
+	opts ...SecureStoreOption[Token],
+) *SecureStore[Token] {
+	return DefaultSecureStore[Token](serviceName, filePath, JSONCodec[Token]{}, opts...)
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -64,20 +65,22 @@ func (m *mockStore[T]) String() string {
 }
 
 // mockProberStore implements both Store[T] and Prober.
+// probeResult uses atomic.Bool so it is safe to read/write from concurrent goroutines.
 type mockProberStore[T any] struct {
 	mockStore[T]
-	probeResult bool
+	probeResult atomic.Bool
 }
 
 func newMockProberStore[T any](name string, probeResult bool) *mockProberStore[T] {
-	return &mockProberStore[T]{
-		mockStore:   mockStore[T]{data: make(map[string]T), name: name},
-		probeResult: probeResult,
+	m := &mockProberStore[T]{
+		mockStore: mockStore[T]{data: make(map[string]T), name: name},
 	}
+	m.probeResult.Store(probeResult)
+	return m
 }
 
 func (m *mockProberStore[T]) Probe() bool {
-	return m.probeResult
+	return m.probeResult.Load()
 }
 
 // mockListerStore implements Store[T] and Lister.
@@ -254,7 +257,7 @@ func TestSecureStore_Refresh_SwitchesToFileWhenKeyringBecomesUnavailable(t *test
 	file := newMockStore[Token]("file: test")
 	store := NewSecureStore[Token](kr, file)
 
-	kr.probeResult = false
+	kr.probeResult.Store(false)
 	changed := store.Refresh()
 
 	if !changed {
@@ -273,7 +276,7 @@ func TestSecureStore_Refresh_SwitchesToKeyringWhenKeyringBecomesAvailable(t *tes
 	file := newMockStore[Token]("file: test")
 	store := NewSecureStore[Token](kr, file)
 
-	kr.probeResult = true
+	kr.probeResult.Store(true)
 	changed := store.Refresh()
 
 	if !changed {
@@ -328,7 +331,7 @@ func TestSecureStore_Refresh_OperatesOnCorrectBackendAfterSwitch(t *testing.T) {
 	}
 
 	// Switch to keyring
-	kr.probeResult = true
+	kr.probeResult.Store(true)
 	if !store.Refresh() {
 		t.Fatal("Refresh() = false, want true")
 	}
@@ -366,6 +369,223 @@ func TestSecureStore_Refresh_ConcurrentSafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, _ = store.Load("client")
+		}()
+	}
+	wg.Wait()
+}
+
+func TestWithBackendChangeHandler_CalledAtConstruction(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", false)
+	file := newMockStore[Token]("file: test")
+
+	var called []string
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(backend string) {
+		called = append(called, backend)
+	}))
+
+	if len(called) != 1 {
+		t.Fatalf("callback called %d times, want 1", len(called))
+	}
+	if called[0] != "file: test" {
+		t.Errorf("callback backend = %q, want %q", called[0], "file: test")
+	}
+	if store.UseKeyring() {
+		t.Error("UseKeyring() = true, want false")
+	}
+}
+
+func TestWithBackendChangeHandler_NotCalledWhenKeyringSucceeds(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+
+	var called int
+	_ = NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(_ string) {
+		called++
+	}))
+
+	if called != 0 {
+		t.Errorf("callback called %d times, want 0", called)
+	}
+}
+
+func TestWithBackendChangeHandler_CalledOnRefreshFallback(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+
+	var called []string
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(backend string) {
+		called = append(called, backend)
+	}))
+
+	// No callback at construction (keyring succeeded).
+	if len(called) != 0 {
+		t.Fatalf("unexpected callback at construction: %v", called)
+	}
+
+	kr.probeResult.Store(false)
+	if !store.Refresh() {
+		t.Fatal("Refresh() = false, want true")
+	}
+
+	if len(called) != 1 {
+		t.Fatalf("callback called %d times after Refresh, want 1", len(called))
+	}
+	if called[0] != "file: test" {
+		t.Errorf("callback backend = %q, want %q", called[0], "file: test")
+	}
+}
+
+func TestWithBackendChangeHandler_CalledOnRefreshRecovery(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", false)
+	file := newMockStore[Token]("file: test")
+
+	var called []string
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(backend string) {
+		called = append(called, backend)
+	}))
+
+	// callback fired at construction (file fallback).
+	if len(called) != 1 {
+		t.Fatalf("expected 1 callback at construction, got %d", len(called))
+	}
+
+	kr.probeResult.Store(true)
+	if !store.Refresh() {
+		t.Fatal("Refresh() = false, want true")
+	}
+
+	if len(called) != 2 {
+		t.Fatalf("callback called %d times total, want 2", len(called))
+	}
+	if called[1] != "keyring: test" {
+		t.Errorf("callback backend on recovery = %q, want %q", called[1], "keyring: test")
+	}
+}
+
+func TestWithBackendChangeHandler_NotCalledOnNoOpRefresh(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+
+	var called int
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(_ string) {
+		called++
+	}))
+
+	// Probe still succeeds — no change.
+	if store.Refresh() {
+		t.Error("Refresh() = true, want false (no change)")
+	}
+	if called != 0 {
+		t.Errorf("callback called %d times, want 0", called)
+	}
+}
+
+func TestWithBackendChangeHandler_NilHandlerIsNoOp(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", false)
+	file := newMockStore[Token]("file: test")
+
+	// Must not panic.
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](nil))
+	if store.UseKeyring() {
+		t.Error("UseKeyring() = true, want false")
+	}
+}
+
+func TestDiagnostic_KeyringActive(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: svc", true)
+	file := newMockStore[Token]("file: /tmp/t.json")
+	store := NewSecureStore[Token](kr, file)
+
+	d := store.Diagnostic()
+
+	if d.Backend != "keyring: svc" {
+		t.Errorf("Backend = %q, want %q", d.Backend, "keyring: svc")
+	}
+	if !d.UseKeyring {
+		t.Error("UseKeyring = false, want true")
+	}
+	if !d.CanProbe {
+		t.Error("CanProbe = false, want true")
+	}
+}
+
+func TestDiagnostic_FileFallback(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: svc", false)
+	file := newMockStore[Token]("file: /tmp/t.json")
+	store := NewSecureStore[Token](kr, file)
+
+	d := store.Diagnostic()
+
+	if d.Backend != "file: /tmp/t.json" {
+		t.Errorf("Backend = %q, want %q", d.Backend, "file: /tmp/t.json")
+	}
+	if d.UseKeyring {
+		t.Error("UseKeyring = true, want false")
+	}
+	if !d.CanProbe {
+		t.Error("CanProbe = false, want true")
+	}
+}
+
+func TestDiagnostic_NoProber(t *testing.T) {
+	kr := newMockStore[Token]("keyring: svc")
+	file := newMockStore[Token]("file: /tmp/t.json")
+	store := NewSecureStore[Token](kr, file)
+
+	d := store.Diagnostic()
+
+	if d.CanProbe {
+		t.Error("CanProbe = true, want false (kr does not implement Prober)")
+	}
+	if d.UseKeyring {
+		t.Error("UseKeyring = true, want false")
+	}
+}
+
+func TestDiagnostic_UpdatesAfterRefresh(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: svc", true)
+	file := newMockStore[Token]("file: /tmp/t.json")
+	store := NewSecureStore[Token](kr, file)
+
+	d1 := store.Diagnostic()
+	if !d1.UseKeyring {
+		t.Fatal("initial UseKeyring = false, want true")
+	}
+
+	kr.probeResult.Store(false)
+	if !store.Refresh() {
+		t.Fatal("Refresh() = false, want true")
+	}
+
+	d2 := store.Diagnostic()
+	if d2.UseKeyring {
+		t.Error("UseKeyring = true after fallback, want false")
+	}
+	if d2.Backend != "file: /tmp/t.json" {
+		t.Errorf("Backend = %q, want %q", d2.Backend, "file: /tmp/t.json")
+	}
+}
+
+func TestWithBackendChangeHandler_ConcurrentSafe(t *testing.T) {
+	kr := newMockProberStore[Token]("keyring: test", true)
+	file := newMockStore[Token]("file: test")
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(_ string) {}))
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			kr.probeResult.Store(!kr.probeResult.Load())
+			_ = store.Refresh()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.Diagnostic()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.Save("client", Token{AccessToken: "t", ClientID: "client"})
 		}()
 	}
 	wg.Wait()
