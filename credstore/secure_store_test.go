@@ -374,12 +374,12 @@ func TestSecureStore_Refresh_ConcurrentSafe(t *testing.T) {
 	wg.Wait()
 }
 
-func TestWithFallbackHandler_CalledAtConstruction(t *testing.T) {
+func TestWithBackendChangeHandler_CalledAtConstruction(t *testing.T) {
 	kr := newMockProberStore[Token]("keyring: test", false)
 	file := newMockStore[Token]("file: test")
 
 	var called []string
-	store := NewSecureStore[Token](kr, file, WithFallbackHandler[Token](func(backend string) {
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(backend string) {
 		called = append(called, backend)
 	}))
 
@@ -394,12 +394,12 @@ func TestWithFallbackHandler_CalledAtConstruction(t *testing.T) {
 	}
 }
 
-func TestWithFallbackHandler_NotCalledWhenKeyringSucceeds(t *testing.T) {
+func TestWithBackendChangeHandler_NotCalledWhenKeyringSucceeds(t *testing.T) {
 	kr := newMockProberStore[Token]("keyring: test", true)
 	file := newMockStore[Token]("file: test")
 
 	var called int
-	_ = NewSecureStore[Token](kr, file, WithFallbackHandler[Token](func(_ string) {
+	_ = NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(_ string) {
 		called++
 	}))
 
@@ -408,12 +408,12 @@ func TestWithFallbackHandler_NotCalledWhenKeyringSucceeds(t *testing.T) {
 	}
 }
 
-func TestWithFallbackHandler_CalledOnRefreshFallback(t *testing.T) {
+func TestWithBackendChangeHandler_CalledOnRefreshFallback(t *testing.T) {
 	kr := newMockProberStore[Token]("keyring: test", true)
 	file := newMockStore[Token]("file: test")
 
 	var called []string
-	store := NewSecureStore[Token](kr, file, WithFallbackHandler[Token](func(backend string) {
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(backend string) {
 		called = append(called, backend)
 	}))
 
@@ -435,12 +435,12 @@ func TestWithFallbackHandler_CalledOnRefreshFallback(t *testing.T) {
 	}
 }
 
-func TestWithFallbackHandler_CalledOnRefreshRecovery(t *testing.T) {
+func TestWithBackendChangeHandler_CalledOnRefreshRecovery(t *testing.T) {
 	kr := newMockProberStore[Token]("keyring: test", false)
 	file := newMockStore[Token]("file: test")
 
 	var called []string
-	store := NewSecureStore[Token](kr, file, WithFallbackHandler[Token](func(backend string) {
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(backend string) {
 		called = append(called, backend)
 	}))
 
@@ -462,12 +462,12 @@ func TestWithFallbackHandler_CalledOnRefreshRecovery(t *testing.T) {
 	}
 }
 
-func TestWithFallbackHandler_NotCalledOnNoOpRefresh(t *testing.T) {
+func TestWithBackendChangeHandler_NotCalledOnNoOpRefresh(t *testing.T) {
 	kr := newMockProberStore[Token]("keyring: test", true)
 	file := newMockStore[Token]("file: test")
 
 	var called int
-	store := NewSecureStore[Token](kr, file, WithFallbackHandler[Token](func(_ string) {
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(_ string) {
 		called++
 	}))
 
@@ -480,12 +480,12 @@ func TestWithFallbackHandler_NotCalledOnNoOpRefresh(t *testing.T) {
 	}
 }
 
-func TestWithFallbackHandler_NilHandlerIsNoOp(t *testing.T) {
+func TestWithBackendChangeHandler_NilHandlerIsNoOp(t *testing.T) {
 	kr := newMockProberStore[Token]("keyring: test", false)
 	file := newMockStore[Token]("file: test")
 
 	// Must not panic.
-	store := NewSecureStore[Token](kr, file, WithFallbackHandler[Token](nil))
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](nil))
 	if store.UseKeyring() {
 		t.Error("UseKeyring() = true, want false")
 	}
@@ -566,10 +566,10 @@ func TestDiagnostic_UpdatesAfterRefresh(t *testing.T) {
 	}
 }
 
-func TestWithFallbackHandler_ConcurrentSafe(t *testing.T) {
+func TestWithBackendChangeHandler_ConcurrentSafe(t *testing.T) {
 	kr := newMockProberStore[Token]("keyring: test", true)
 	file := newMockStore[Token]("file: test")
-	store := NewSecureStore[Token](kr, file, WithFallbackHandler[Token](func(_ string) {}))
+	store := NewSecureStore[Token](kr, file, WithBackendChangeHandler[Token](func(_ string) {}))
 
 	var wg sync.WaitGroup
 	for range 50 {

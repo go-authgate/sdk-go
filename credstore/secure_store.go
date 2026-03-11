@@ -8,10 +8,11 @@ type Prober interface {
 	Probe() bool
 }
 
-// FallbackHandlerFunc is called when the active backend changes.
+// BackendChangeFunc is called whenever the active backend changes.
 // backend is the newly-active store's String() description.
+// It fires both when falling back to file storage and when recovering to keyring.
 // Always called outside the mutex lock.
-type FallbackHandlerFunc func(backend string)
+type BackendChangeFunc func(backend string)
 
 // Diagnostics is a point-in-time snapshot of SecureStore state.
 type Diagnostics struct {
@@ -23,11 +24,12 @@ type Diagnostics struct {
 // SecureStoreOption[T] is a functional option for NewSecureStore.
 type SecureStoreOption[T any] func(*SecureStore[T])
 
-// WithFallbackHandler registers fn as the backend-change callback.
-// Passing nil is a no-op.
-func WithFallbackHandler[T any](fn FallbackHandlerFunc) SecureStoreOption[T] {
+// WithBackendChangeHandler registers fn as the backend-change callback.
+// It is called whenever the active backend switches — both on fallback to file
+// and on recovery back to keyring. Passing nil is a no-op.
+func WithBackendChangeHandler[T any](fn BackendChangeFunc) SecureStoreOption[T] {
 	return func(s *SecureStore[T]) {
-		s.onFallback = fn
+		s.onChange = fn
 	}
 }
 
@@ -54,19 +56,21 @@ type SecureStore[T any] struct {
 	file       Store[T]
 	prober     Prober // nil if kr does not implement Prober
 	useKeyring bool
-	onFallback FallbackHandlerFunc // optional; called outside the lock
+	onChange   BackendChangeFunc // optional; called outside the lock
 }
 
 // NewSecureStore creates a SecureStore. If kr implements Prober and the probe
 // succeeds, kr is used as the primary store. Otherwise, file is used as the
-// fallback. Both stores are retained for use by Refresh(). The onFallback
-// callback (if set via WithFallbackHandler) is called when the file backend
+// fallback. Both stores are retained for use by Refresh(). The onChange
+// callback (if set via WithBackendChangeHandler) is called when the file backend
 // is selected at construction time.
 func NewSecureStore[T any](kr, file Store[T], opts ...SecureStoreOption[T]) *SecureStore[T] {
 	s := &SecureStore[T]{kr: kr, file: file}
 	s.prober, _ = kr.(Prober)
 	for _, opt := range opts {
-		opt(s) // apply before probe so callback is registered first
+		if opt != nil {
+			opt(s) // apply before probe so callback is registered first
+		}
 	}
 	if s.prober != nil && s.prober.Probe() {
 		s.primary = kr
@@ -75,8 +79,8 @@ func NewSecureStore[T any](kr, file Store[T], opts ...SecureStoreOption[T]) *Sec
 	} else {
 		s.primary = file
 		s.useKeyring = false
-		if s.onFallback != nil {
-			s.onFallback(file.String()) // safe: struct not yet shared
+		if s.onChange != nil {
+			s.onChange(file.String()) // safe: struct not yet shared
 		}
 	}
 	return s
@@ -95,7 +99,7 @@ func (s *SecureStore[T]) active() Store[T] {
 // availability has changed. It returns true if the active backend changed,
 // false if it remained the same. No data is migrated between backends.
 // Probe() is called outside the lock to avoid holding it during a potentially
-// slow OS call. The onFallback callback is called outside the lock to prevent
+// slow OS call. The onChange callback is called outside the lock to prevent
 // deadlocks.
 func (s *SecureStore[T]) Refresh() bool {
 	if s.prober == nil {
@@ -117,8 +121,8 @@ func (s *SecureStore[T]) Refresh() bool {
 		s.primary, s.useKeyring = s.file, false
 		newBackend = s.file.String()
 	}
-	cb := s.onFallback // capture under the lock
-	s.mu.Unlock()      // release BEFORE calling callback (prevent deadlock)
+	cb := s.onChange // capture under the lock
+	s.mu.Unlock()    // release BEFORE calling callback (prevent deadlock)
 
 	if cb != nil {
 		cb(newBackend)
