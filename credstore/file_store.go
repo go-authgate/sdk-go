@@ -15,7 +15,7 @@ type storageMap struct {
 
 // FileStore stores values in a JSON file with file locking and atomic writes.
 type FileStore[T any] struct {
-	FilePath string
+	filePath string
 	codec    Codec[T]
 }
 
@@ -25,24 +25,24 @@ func NewFileStore[T any](filePath string, codec Codec[T]) *FileStore[T] {
 	if codec == nil {
 		panic("credstore: NewFileStore called with nil codec")
 	}
-	return &FileStore[T]{FilePath: filePath, codec: codec}
+	return &FileStore[T]{filePath: filePath, codec: codec}
 }
 
 // readStorageMap reads and unmarshals the storage map from the file.
 // Returns an empty initialized map if the file does not exist.
 func (f *FileStore[T]) readStorageMap() (storageMap, error) {
 	var m storageMap
-	data, err := os.ReadFile(f.FilePath)
+	data, err := os.ReadFile(f.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			m.Data = make(map[string]string)
 			return m, nil
 		}
-		return m, fmt.Errorf("failed to read file %q: %w", f.FilePath, err)
+		return m, fmt.Errorf("failed to read file %q: %w", f.filePath, err)
 	}
 
 	if err := json.Unmarshal(data, &m); err != nil {
-		return m, fmt.Errorf("failed to parse file %q: %w", f.FilePath, err)
+		return m, fmt.Errorf("failed to parse file %q: %w", f.filePath, err)
 	}
 	if m.Data == nil {
 		m.Data = make(map[string]string)
@@ -52,7 +52,7 @@ func (f *FileStore[T]) readStorageMap() (storageMap, error) {
 
 // ensureDir creates the parent directory of the store file if it does not exist.
 func (f *FileStore[T]) ensureDir() error {
-	if err := os.MkdirAll(filepath.Dir(f.FilePath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(f.filePath), 0o700); err != nil {
 		return fmt.Errorf("failed to create store directory: %w", err)
 	}
 	return nil
@@ -65,12 +65,12 @@ func (f *FileStore[T]) writeStorageMap(m storageMap) error {
 		return err
 	}
 
-	tempFile := f.FilePath + ".tmp"
+	tempFile := f.filePath + ".tmp"
 	if err := os.WriteFile(tempFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
-	if err := os.Rename(tempFile, f.FilePath); err != nil {
+	if err := os.Rename(tempFile, f.filePath); err != nil {
 		_ = os.Remove(tempFile)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
@@ -80,7 +80,7 @@ func (f *FileStore[T]) writeStorageMap(m storageMap) error {
 
 // withFileLock acquires a file lock, runs fn, and releases the lock.
 func (f *FileStore[T]) withFileLock(fn func() error) error {
-	lock, err := acquireFileLock(f.FilePath)
+	lock, err := acquireFileLock(f.filePath)
 	if err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
@@ -90,6 +90,8 @@ func (f *FileStore[T]) withFileLock(fn func() error) error {
 }
 
 // Load loads data from the file for the given client ID.
+// No file lock is needed: Save uses atomic rename, so reads always see a
+// consistent snapshot on POSIX systems.
 func (f *FileStore[T]) Load(clientID string) (T, error) {
 	var zero T
 	m, err := f.readStorageMap()
@@ -104,7 +106,7 @@ func (f *FileStore[T]) Load(clientID string) (T, error) {
 
 	decoded, err := f.codec.Decode(encoded)
 	if err != nil {
-		return zero, fmt.Errorf("failed to decode value from %q: %w", f.FilePath, err)
+		return zero, fmt.Errorf("failed to decode value from %q: %w", f.filePath, err)
 	}
 	return decoded, nil
 }
@@ -157,6 +159,8 @@ func (f *FileStore[T]) Delete(clientID string) error {
 }
 
 // List returns all stored client IDs, sorted alphabetically.
+// No file lock is needed: Save uses atomic rename, so reads always see a
+// consistent snapshot on POSIX systems.
 func (f *FileStore[T]) List() ([]string, error) {
 	m, err := f.readStorageMap()
 	if err != nil {
@@ -172,5 +176,5 @@ func (f *FileStore[T]) List() ([]string, error) {
 
 // String returns a description of this store.
 func (f *FileStore[T]) String() string {
-	return "file: " + f.FilePath
+	return "file: " + f.filePath
 }
