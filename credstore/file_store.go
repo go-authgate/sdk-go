@@ -174,6 +174,11 @@ func (f *FileStore[T]) List() ([]string, error) {
 	return ids, nil
 }
 
+// FilePath returns the configured file path.
+func (f *FileStore[T]) FilePath() string {
+	return f.filePath
+}
+
 // String returns a description of this store.
 func (f *FileStore[T]) String() string {
 	return "file: " + f.filePath

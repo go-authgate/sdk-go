@@ -80,6 +80,11 @@ func (k *KeyringStore[T]) Delete(clientID string) error {
 	return nil
 }
 
+// ServiceName returns the keyring service name.
+func (k *KeyringStore[T]) ServiceName() string {
+	return k.serviceName
+}
+
 // String returns a description of this store.
 func (k *KeyringStore[T]) String() string {
 	return "keyring: " + k.serviceName
