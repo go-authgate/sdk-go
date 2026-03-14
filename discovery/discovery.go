@@ -44,6 +44,20 @@ type Metadata struct {
 	CodeChallengeMethodsSupported    []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
+// cloneMetadata returns a deep copy of the Metadata, including all slice fields.
+func cloneMetadata(m *Metadata) *Metadata {
+	cp := *m
+	cp.ResponseTypesSupported = slices.Clone(m.ResponseTypesSupported)
+	cp.SubjectTypesSupported = slices.Clone(m.SubjectTypesSupported)
+	cp.IDTokenSigningAlgValuesSupported = slices.Clone(m.IDTokenSigningAlgValuesSupported)
+	cp.ScopesSupported = slices.Clone(m.ScopesSupported)
+	cp.TokenEndpointAuthMethods = slices.Clone(m.TokenEndpointAuthMethods)
+	cp.GrantTypesSupported = slices.Clone(m.GrantTypesSupported)
+	cp.ClaimsSupported = slices.Clone(m.ClaimsSupported)
+	cp.CodeChallengeMethodsSupported = slices.Clone(m.CodeChallengeMethodsSupported)
+	return &cp
+}
+
 // Endpoints converts the metadata to an oauth.Endpoints struct.
 func (m *Metadata) Endpoints() oauth.Endpoints {
 	ep := oauth.Endpoints{
@@ -120,9 +134,9 @@ func NewClient(issuerURL string, opts ...Option) (*Client, error) {
 func (c *Client) Fetch(ctx context.Context) (*Metadata, error) {
 	c.mu.RLock()
 	if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
-		cp := *c.cached
+		cp := cloneMetadata(c.cached)
 		c.mu.RUnlock()
-		return &cp, nil
+		return cp, nil
 	}
 	c.mu.RUnlock()
 
@@ -136,8 +150,7 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 
 	// Double-check after acquiring write lock
 	if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
-		cp := *c.cached
-		return &cp, nil
+		return cloneMetadata(c.cached), nil
 	}
 
 	discoveryURL := c.issuerURL + wellKnownPath
@@ -170,18 +183,13 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 		)
 	}
 
-	// AuthGate returns /oauth/device/code as device_authorization_endpoint via the
-	// standard OIDC discovery. If it's not set explicitly, derive it from grant types.
+	// AuthGate uses a fixed device authorization path. Derive it from issuer
+	// when not explicitly advertised in the discovery response.
 	if meta.DeviceAuthorizationEndpoint == "" && meta.Issuer != "" {
-		if slices.Contains(
-			meta.GrantTypesSupported,
-			"urn:ietf:params:oauth:grant-type:device_code",
-		) {
-			meta.DeviceAuthorizationEndpoint = strings.TrimRight(
-				meta.Issuer,
-				"/",
-			) + "/oauth/device/code"
-		}
+		meta.DeviceAuthorizationEndpoint = strings.TrimRight(
+			meta.Issuer,
+			"/",
+		) + "/oauth/device/code"
 	}
 
 	// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
@@ -192,6 +200,5 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	c.cached = &meta
 	c.fetchedAt = time.Now()
 
-	cp := meta
-	return &cp, nil
+	return cloneMetadata(&meta), nil
 }

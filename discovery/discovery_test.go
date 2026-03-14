@@ -117,7 +117,8 @@ func TestFetch_Cache(t *testing.T) {
 
 func TestFetch_CacheCopy(t *testing.T) {
 	server := newTestServer(t, Metadata{
-		TokenEndpoint: "https://auth.example.com/oauth/token",
+		TokenEndpoint:   "https://auth.example.com/oauth/token",
+		ScopesSupported: []string{"openid", "profile"},
 	})
 
 	client, err := NewClient(server.URL)
@@ -130,17 +131,27 @@ func TestFetch_CacheCopy(t *testing.T) {
 		t.Fatalf("Fetch 1: %v", err)
 	}
 
-	// Mutate the returned copy
+	// Mutate scalar field
 	result1.TokenEndpoint = "mutated"
+
+	// Mutate slice contents
+	if len(result1.ScopesSupported) > 0 {
+		result1.ScopesSupported[0] = "corrupted"
+	}
 
 	result2, err := client.Fetch(context.Background())
 	if err != nil {
 		t.Fatalf("Fetch 2: %v", err)
 	}
 
-	// Cache should not be affected
+	// Cache should not be affected by scalar mutation
 	if result2.TokenEndpoint == "mutated" {
-		t.Error("mutation of returned Metadata should not affect cache")
+		t.Error("scalar mutation of returned Metadata should not affect cache")
+	}
+
+	// Cache should not be affected by slice mutation
+	if len(result2.ScopesSupported) > 0 && result2.ScopesSupported[0] == "corrupted" {
+		t.Error("slice mutation of returned Metadata should not affect cache")
 	}
 }
 

@@ -48,6 +48,6 @@ if err != nil {
 
 - Caches metadata for the configured TTL (default 1 hour)
 - Thread-safe — multiple goroutines can call `Fetch()` concurrently
-- Returns a defensive copy — callers may safely modify the returned `Metadata` without affecting the cache
+- Returns a deep copy — callers may safely modify the returned `Metadata` (including slice fields) without affecting the cache
 - Validates that the returned issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
-- Automatically derives `device_authorization_endpoint` and `introspection_endpoint` from the issuer URL if not explicitly advertised
+- Automatically derives `device_authorization_endpoint` and `introspection_endpoint` from the issuer URL when not explicitly advertised (AuthGate uses fixed paths)
