@@ -162,13 +162,35 @@ func generateState() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// AuthCodeFlowOption configures RunAuthCodeFlow.
+type AuthCodeFlowOption func(*authCodeFlowConfig)
+
+type authCodeFlowConfig struct {
+	localPort int // 0 means pick a random free port
+}
+
+// WithLocalPort sets the local port for the callback server.
+// By default a random free port is used.
+func WithLocalPort(port int) AuthCodeFlowOption {
+	return func(cfg *authCodeFlowConfig) {
+		cfg.localPort = port
+	}
+}
+
 // RunAuthCodeFlow executes the Authorization Code + PKCE flow:
 // generate PKCE + state, start local callback server, open browser, exchange code.
 func RunAuthCodeFlow(
 	ctx context.Context,
 	client *oauth.Client,
 	scopes []string,
+	opts ...AuthCodeFlowOption,
 ) (*oauth.Token, error) {
+	cfg := &authCodeFlowConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(cfg)
+		}
+	}
 	pkce, err := NewPKCE()
 	if err != nil {
 		return nil, fmt.Errorf("authflow: generate PKCE: %w", err)
@@ -179,8 +201,8 @@ func RunAuthCodeFlow(
 		return nil, fmt.Errorf("authflow: generate state: %w", err)
 	}
 
-	// Find a free port for the callback server
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// Start the callback server on the configured (or random) port
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.localPort))
 	if err != nil {
 		return nil, fmt.Errorf("authflow: listen: %w", err)
 	}
