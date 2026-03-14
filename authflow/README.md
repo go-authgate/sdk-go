@@ -35,7 +35,6 @@ import "github.com/go-authgate/sdk-go/credstore"
 store := credstore.DefaultTokenSecureStore("my-app", ".tokens.json")
 ts := authflow.NewTokenSource(client,
     authflow.WithStore(store),
-    authflow.WithClientID("my-client-id"),
 )
 
 token, _ := ts.Token(ctx) // auto-loads from cache, refreshes if expired
@@ -74,7 +73,6 @@ if authflow.CheckBrowserAvailability() {
 | Option           | Description                                   |
 | ---------------- | --------------------------------------------- |
 | `WithStore()`    | Set credstore for token persistence            |
-| `WithClientID()` | Set client ID used as the store key            |
 
 ## Types
 

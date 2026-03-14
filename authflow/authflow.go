@@ -317,26 +317,17 @@ func WithStore(store credstore.Store[credstore.Token]) TokenSourceOption {
 	}
 }
 
-// WithClientID sets the client ID used as the store key.
-func WithClientID(clientID string) TokenSourceOption {
-	return func(ts *TokenSource) {
-		ts.clientID = clientID
-	}
-}
-
 // TokenSource provides automatic token refresh with optional persistent storage.
 type TokenSource struct {
-	client   *oauth.Client
-	store    credstore.Store[credstore.Token]
-	clientID string
-	mu       sync.Mutex
+	client *oauth.Client
+	store  credstore.Store[credstore.Token]
+	mu     sync.Mutex
 }
 
 // NewTokenSource creates a new TokenSource that automatically refreshes tokens.
 func NewTokenSource(client *oauth.Client, opts ...TokenSourceOption) *TokenSource {
 	ts := &TokenSource{
-		client:   client,
-		clientID: client.ClientID(),
+		client: client,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -353,7 +344,7 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 
 	// Try loading from store
 	if ts.store != nil {
-		stored, err := ts.store.Load(ts.clientID)
+		stored, err := ts.store.Load(ts.client.ClientID())
 		if err != nil && !errors.Is(err, credstore.ErrNotFound) {
 			return nil, fmt.Errorf("authflow: load token: %w", err)
 		}
@@ -389,7 +380,7 @@ func (ts *TokenSource) saveToken(token *oauth.Token) error {
 	if ts.store == nil {
 		return nil
 	}
-	return ts.store.Save(ts.clientID, oauthToCredstore(token, ts.clientID))
+	return ts.store.Save(ts.client.ClientID(), oauthToCredstore(token, ts.client.ClientID()))
 }
 
 func credstoreToOAuth(t *credstore.Token) *oauth.Token {
