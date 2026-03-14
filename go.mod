@@ -2,7 +2,10 @@ module github.com/go-authgate/sdk-go
 
 go 1.25.0
 
-require github.com/zalando/go-keyring v0.2.6
+require (
+	github.com/appleboy/go-httpretry v0.11.0
+	github.com/zalando/go-keyring v0.2.6
+)
 
 require (
 	al.essio.dev/pkg/shellescape v1.6.0 // indirect
