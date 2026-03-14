@@ -135,9 +135,12 @@ func WithClientSecret(secret string) Option {
 }
 
 // WithHTTPClient sets a custom retry HTTP client.
+// If nil is provided, the default client is kept.
 func WithHTTPClient(httpClient *retry.Client) Option {
 	return func(c *Client) {
-		c.httpClient = httpClient
+		if httpClient != nil {
+			c.httpClient = httpClient
+		}
 	}
 }
 
@@ -154,7 +157,9 @@ func NewClient(clientID string, endpoints Endpoints, opts ...Option) (*Client, e
 		httpClient: httpClient,
 	}
 	for _, opt := range opts {
-		opt(c)
+		if opt != nil {
+			opt(c)
+		}
 	}
 	return c, nil
 }
@@ -180,7 +185,9 @@ func (c *Client) RequestDeviceCode(ctx context.Context, scopes []string) (*Devic
 
 	data := url.Values{
 		"client_id": {c.clientID},
-		"scope":     {strings.Join(scopes, " ")},
+	}
+	if len(scopes) > 0 {
+		data.Set("scope", strings.Join(scopes, " "))
 	}
 
 	var auth DeviceAuth
@@ -266,7 +273,12 @@ func (c *Client) Revoke(ctx context.Context, token string) error {
 	}
 	defer resp.Body.Close()
 
-	// RFC 7009: always returns 200
+	// RFC 7009 §2.2: The server responds with 200 for both success and invalid tokens.
+	// However, non-200 responses (e.g., 500) indicate a server error.
+	if resp.StatusCode != http.StatusOK {
+		return parseErrorResponse(resp)
+	}
+
 	return nil
 }
 

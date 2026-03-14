@@ -7,44 +7,81 @@ OAuth 2.0 token client for AuthGate. Pure HTTP layer — no storage, polling, or
 ```go
 import "github.com/go-authgate/sdk-go/oauth"
 
-client, _ := oauth.NewClient("client-id", oauth.Endpoints{
+client, err := oauth.NewClient("client-id", oauth.Endpoints{
     TokenURL:               "https://auth.example.com/oauth/token",
     DeviceAuthorizationURL: "https://auth.example.com/oauth/device/code",
 })
+if err != nil {
+    log.Fatal(err)
+}
 
-// Or use discovery to populate endpoints automatically:
-// client, _ := oauth.NewClient("client-id", meta.Endpoints())
+// Or use the discovery package to populate endpoints automatically:
+//
+//   import "github.com/go-authgate/sdk-go/discovery"
+//
+//   disco, err := discovery.NewClient("https://auth.example.com")
+//   meta, err := disco.Fetch(ctx)
+//   client, err := oauth.NewClient("client-id", meta.Endpoints())
 ```
 
 ### Device Code Flow
 
 ```go
-auth, _ := client.RequestDeviceCode(ctx, []string{"read", "write"})
+auth, err := client.RequestDeviceCode(ctx, []string{"read", "write"})
+if err != nil {
+    log.Fatal(err)
+}
 fmt.Printf("Open %s and enter code: %s\n", auth.VerificationURI, auth.UserCode)
 
-token, _ := client.ExchangeDeviceCode(ctx, auth.DeviceCode)
+token, err := client.ExchangeDeviceCode(ctx, auth.DeviceCode)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Authorization Code + PKCE
 
 ```go
-token, _ := client.ExchangeAuthCode(ctx, code, redirectURI, codeVerifier)
+token, err := client.ExchangeAuthCode(ctx, code, redirectURI, codeVerifier)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Client Credentials
 
 ```go
-client, _ := oauth.NewClient("client-id", endpoints, oauth.WithClientSecret("secret"))
-token, _ := client.ClientCredentials(ctx, []string{"read"})
+client, err := oauth.NewClient("client-id", endpoints, oauth.WithClientSecret("secret"))
+if err != nil {
+    log.Fatal(err)
+}
+token, err := client.ClientCredentials(ctx, []string{"read"})
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Refresh / Revoke / Introspect / UserInfo
 
 ```go
-token, _ := client.RefreshToken(ctx, refreshToken)
-client.Revoke(ctx, token.AccessToken)
-result, _ := client.Introspect(ctx, token.AccessToken)
-info, _ := client.UserInfo(ctx, token.AccessToken)
+token, err := client.RefreshToken(ctx, refreshToken)
+if err != nil {
+    log.Fatal(err)
+}
+
+if err := client.Revoke(ctx, token.AccessToken); err != nil {
+    log.Fatal(err)
+}
+
+result, err := client.Introspect(ctx, token.AccessToken)
+if err != nil {
+    log.Fatal(err)
+}
+
+info, err := client.UserInfo(ctx, token.AccessToken)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Options

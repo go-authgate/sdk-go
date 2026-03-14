@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -138,7 +139,7 @@ func TestExchangeDeviceCode_AuthorizationPending(t *testing.T) {
 	}
 
 	var oauthErr *Error
-	if !isOAuthError(err, &oauthErr) {
+	if !errors.As(err, &oauthErr) {
 		t.Fatalf("expected *Error, got %T: %v", err, err)
 	}
 	if oauthErr.Code != "authorization_pending" {
@@ -191,12 +192,15 @@ func TestExchangeAuthCode(t *testing.T) {
 }
 
 func TestClientCredentials(t *testing.T) {
-	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm: %v", err)
 		}
 		if r.PostForm.Get("grant_type") != "client_credentials" {
 			t.Errorf("unexpected grant_type: %s", r.PostForm.Get("grant_type"))
+		}
+		if r.PostForm.Get("client_secret") != "test-secret" {
+			t.Errorf("unexpected client_secret: %s", r.PostForm.Get("client_secret"))
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -206,7 +210,17 @@ func TestClientCredentials(t *testing.T) {
 			"expires_in":   3600,
 			"scope":        "read",
 		})
-	})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(
+		"test-client",
+		Endpoints{TokenURL: server.URL + "/oauth/token"},
+		WithClientSecret("test-secret"),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 
 	token, err := client.ClientCredentials(context.Background(), []string{"read"})
 	if err != nil {
@@ -423,21 +437,4 @@ func TestRequestDeviceCode_NoEndpoint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing endpoint")
 	}
-}
-
-func isOAuthError(err error, target **Error) bool {
-	var oauthErr *Error
-	for e := err; e != nil; {
-		if oe, is := e.(*Error); is {
-			*target = oe
-			return true
-		}
-		if u, is := e.(interface{ Unwrap() error }); is {
-			e = u.Unwrap()
-		} else {
-			break
-		}
-	}
-	_ = oauthErr
-	return false
 }
