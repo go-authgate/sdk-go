@@ -74,9 +74,11 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	}
 	ts.mu.RUnlock()
 
-	// Slow path: use singleflight to coalesce concurrent refresh requests
+	// Slow path: use singleflight to coalesce concurrent refresh requests.
+	// Only one goroutine executes the func; others wait for its result.
 	v, err, _ := ts.group.Do("token", func() (any, error) {
-		// Double-check under write lock
+		// Re-check cache: another goroutine's singleflight may have just
+		// populated it before this call started.
 		ts.mu.RLock()
 		if ts.token != nil && ts.isValid() {
 			tok := ts.token
@@ -85,6 +87,7 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 		}
 		ts.mu.RUnlock()
 
+		// Network call happens outside any lock
 		token, fetchErr := ts.client.ClientCredentials(ctx, ts.scopes)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("clientcreds: fetch token: %w", fetchErr)
