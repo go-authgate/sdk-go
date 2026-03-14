@@ -45,6 +45,45 @@ func setupTokenInfoServer(t *testing.T) (*httptest.Server, *oauth.Client) {
 	return server, client
 }
 
+func setupIntrospectionServer(t *testing.T) (*httptest.Server, *oauth.Client) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+			return
+		}
+		token := r.PostForm.Get("token")
+
+		w.Header().Set("Content-Type", "application/json")
+		if token == "valid-token" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"active":     true,
+				"scope":      "read write",
+				"client_id":  "my-client",
+				"username":   "testuser",
+				"token_type": "Bearer",
+				"exp":        1900000000,
+				"sub":        "user-123",
+			})
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"active": false,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	endpoints := oauth.Endpoints{
+		IntrospectionURL: server.URL + "/oauth/introspect",
+	}
+	client, err := oauth.NewClient("my-client", endpoints, oauth.WithClientSecret("secret"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return server, client
+}
+
 func TestBearerAuth_ValidToken(t *testing.T) {
 	_, oauthClient := setupTokenInfoServer(t)
 
@@ -73,6 +112,29 @@ func TestBearerAuth_ValidToken(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestBearerAuth_CaseInsensitiveBearer(t *testing.T) {
+	_, oauthClient := setupTokenInfoServer(t)
+
+	handler := BearerAuth(
+		WithOAuthClient(oauthClient),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// RFC 6750: auth scheme is case-insensitive
+	for _, scheme := range []string{"bearer valid-token", "BEARER valid-token", "Bearer valid-token"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", scheme)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("scheme %q: status = %d, want %d", scheme, rec.Code, http.StatusOK)
+		}
 	}
 }
 
@@ -154,6 +216,100 @@ func TestBearerAuth_RequiredScopes_Satisfied(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestBearerAuth_Introspection_ValidToken(t *testing.T) {
+	_, oauthClient := setupIntrospectionServer(t)
+
+	handler := BearerAuth(
+		WithOAuthClient(oauthClient),
+		WithIntrospection(),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info, ok := TokenInfoFromContext(r.Context())
+		if !ok {
+			t.Error("TokenInfoFromContext returned false")
+			return
+		}
+		if info.UserID != "user-123" {
+			t.Errorf("UserID = %q, want %q", info.UserID, "user-123")
+		}
+		if info.Scope != "read write" {
+			t.Errorf("Scope = %q, want %q", info.Scope, "read write")
+		}
+		if info.SubjectType != "user" {
+			t.Errorf("SubjectType = %q, want %q", info.SubjectType, "user")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestBearerAuth_Introspection_InactiveToken(t *testing.T) {
+	_, oauthClient := setupIntrospectionServer(t)
+
+	handler := BearerAuth(
+		WithOAuthClient(oauthClient),
+		WithIntrospection(),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer inactive-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestBearerAuth_Introspection_RequiredScopes(t *testing.T) {
+	_, oauthClient := setupIntrospectionServer(t)
+
+	handler := BearerAuth(
+		WithOAuthClient(oauthClient),
+		WithIntrospection(),
+		WithRequiredScopes("admin"),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for missing scope")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestBearerAuth_ServerError_NoClient(t *testing.T) {
+	handler := BearerAuth()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer some-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }
 

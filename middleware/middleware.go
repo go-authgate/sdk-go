@@ -7,6 +7,8 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -93,13 +95,56 @@ func WithErrorHandler(handler ErrorHandler) Option {
 	}
 }
 
-func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, _ error) {
-	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
-	http.Error(
-		w,
-		`{"error":"invalid_token","error_description":"Invalid or missing Bearer token"}`,
-		http.StatusUnauthorized,
-	)
+// errorResponse is used to produce safe JSON error bodies.
+type errorResponse struct {
+	Error       string `json:"error"`
+	Description string `json:"error_description"`
+}
+
+func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
+	var oauthErr *oauth.Error
+	if errors.As(err, &oauthErr) {
+		switch oauthErr.Code {
+		case "server_error":
+			writeJSON(w, http.StatusInternalServerError, errorResponse{
+				Error:       oauthErr.Code,
+				Description: oauthErr.Description,
+			})
+		case "missing_token", "invalid_token":
+			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+			writeJSON(w, http.StatusUnauthorized, errorResponse{
+				Error:       oauthErr.Code,
+				Description: oauthErr.Description,
+			})
+		default:
+			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+			writeJSON(w, http.StatusUnauthorized, errorResponse{
+				Error:       oauthErr.Code,
+				Description: oauthErr.Description,
+			})
+		}
+		return
+	}
+
+	// Non-OAuth errors are server-side issues
+	writeJSON(w, http.StatusInternalServerError, errorResponse{
+		Error:       "server_error",
+		Description: "Internal server error",
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeInsufficientScope(w http.ResponseWriter, scope string) {
+	w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
+	writeJSON(w, http.StatusForbidden, errorResponse{
+		Error:       "insufficient_scope",
+		Description: "Token does not have required scope: " + scope,
+	})
 }
 
 // BearerAuth returns middleware that validates Bearer tokens.
@@ -108,7 +153,9 @@ func BearerAuth(opts ...Option) func(http.Handler) http.Handler {
 		errorHandler: defaultErrorHandler,
 	}
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -132,12 +179,7 @@ func BearerAuth(opts ...Option) func(http.Handler) http.Handler {
 			// Check required scopes
 			for _, scope := range cfg.requiredScopes {
 				if !info.HasScope(scope) {
-					w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
-					http.Error(
-						w,
-						`{"error":"insufficient_scope","error_description":"Token does not have required scope: `+scope+`"}`,
-						http.StatusForbidden,
-					)
+					writeInsufficientScope(w, scope)
 					return
 				}
 			}
@@ -155,22 +197,16 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			info, ok := TokenInfoFromContext(r.Context())
 			if !ok {
-				http.Error(
-					w,
-					`{"error":"unauthorized","error_description":"No token info in context"}`,
-					http.StatusUnauthorized,
-				)
+				writeJSON(w, http.StatusUnauthorized, errorResponse{
+					Error:       "unauthorized",
+					Description: "No token info in context",
+				})
 				return
 			}
 
 			for _, scope := range scopes {
 				if !info.HasScope(scope) {
-					w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
-					http.Error(
-						w,
-						`{"error":"insufficient_scope","error_description":"Token does not have required scope: `+scope+`"}`,
-						http.StatusForbidden,
-					)
+					writeInsufficientScope(w, scope)
 					return
 				}
 			}
@@ -180,12 +216,14 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 	}
 }
 
+// extractBearerToken extracts the token from the Authorization header.
+// The "Bearer" scheme is matched case-insensitively per RFC 6750.
 func extractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
+	if len(auth) < 7 || !strings.EqualFold(auth[:7], "bearer ") {
 		return ""
 	}
-	return strings.TrimPrefix(auth, "Bearer ")
+	return strings.TrimSpace(auth[7:])
 }
 
 func validateToken(ctx context.Context, cfg *config, token string) (*TokenInfo, error) {
