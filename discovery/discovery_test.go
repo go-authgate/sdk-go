@@ -5,27 +5,34 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func newTestServer(t *testing.T, meta Metadata) *httptest.Server {
 	t.Helper()
+	// Use a two-phase approach: create server first, then set issuer to server URL
+	var serverURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != wellKnownPath {
 			http.NotFound(w, r)
 			return
 		}
+		// Override issuer with actual server URL so issuer validation passes
+		m := meta
+		m.Issuer = serverURL
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(meta)
+		json.NewEncoder(w).Encode(m)
 	}))
+	serverURL = server.URL
 	t.Cleanup(server.Close)
 	return server
 }
 
 func TestFetch(t *testing.T) {
 	meta := Metadata{
-		Issuer:                "https://auth.example.com",
 		AuthorizationEndpoint: "https://auth.example.com/oauth/authorize",
 		TokenEndpoint:         "https://auth.example.com/oauth/token",
 		UserinfoEndpoint:      "https://auth.example.com/oauth/userinfo",
@@ -51,8 +58,8 @@ func TestFetch(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 
-	if result.Issuer != meta.Issuer {
-		t.Errorf("Issuer = %q, want %q", result.Issuer, meta.Issuer)
+	if result.Issuer != server.URL {
+		t.Errorf("Issuer = %q, want %q", result.Issuer, server.URL)
 	}
 	if result.TokenEndpoint != meta.TokenEndpoint {
 		t.Errorf("TokenEndpoint = %q, want %q", result.TokenEndpoint, meta.TokenEndpoint)
@@ -66,16 +73,27 @@ func TestFetch(t *testing.T) {
 }
 
 func TestFetch_Cache(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		callCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Metadata{
-			Issuer:        "https://auth.example.com",
+			Issuer:        "will-be-overridden",
 			TokenEndpoint: "https://auth.example.com/oauth/token",
 		})
 	}))
 	t.Cleanup(server.Close)
+
+	// Patch the handler to return the correct issuer
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Metadata{
+			Issuer:        server.URL,
+			TokenEndpoint: "https://auth.example.com/oauth/token",
+		})
+	})
+	callCount.Store(0)
 
 	client, err := NewClient(server.URL, WithCacheTTL(1*time.Hour))
 	if err != nil {
@@ -92,8 +110,90 @@ func TestFetch_Cache(t *testing.T) {
 		t.Fatalf("Fetch 2: %v", err)
 	}
 
-	if callCount != 1 {
-		t.Errorf("server called %d times, want 1 (cached)", callCount)
+	if count := callCount.Load(); count != 1 {
+		t.Errorf("server called %d times, want 1 (cached)", count)
+	}
+}
+
+func TestFetch_CacheCopy(t *testing.T) {
+	server := newTestServer(t, Metadata{
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+	})
+
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	result1, err := client.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch 1: %v", err)
+	}
+
+	// Mutate the returned copy
+	result1.TokenEndpoint = "mutated"
+
+	result2, err := client.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch 2: %v", err)
+	}
+
+	// Cache should not be affected
+	if result2.TokenEndpoint == "mutated" {
+		t.Error("mutation of returned Metadata should not affect cache")
+	}
+}
+
+func TestFetch_Concurrent(t *testing.T) {
+	var callCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Metadata{
+			Issuer:        "", // placeholder
+			TokenEndpoint: "https://auth.example.com/oauth/token",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	// Patch handler to return correct issuer
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Metadata{
+			Issuer:        server.URL,
+			TokenEndpoint: "https://auth.example.com/oauth/token",
+		})
+	})
+	callCount.Store(0)
+
+	client, err := NewClient(server.URL, WithCacheTTL(1*time.Hour))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for range goroutines {
+		wg.Go(func() {
+			_, fetchErr := client.Fetch(context.Background())
+			if fetchErr != nil {
+				errs <- fetchErr
+			}
+		})
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for fetchErr := range errs {
+		t.Errorf("Fetch error: %v", fetchErr)
+	}
+
+	if count := callCount.Load(); count != 1 {
+		t.Errorf("server called %d times, want 1 (concurrent cache)", count)
 	}
 }
 
@@ -142,5 +242,26 @@ func TestFetch_ServerError(t *testing.T) {
 	_, err = client.Fetch(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 404 response")
+	}
+}
+
+func TestFetch_IssuerMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Metadata{
+			Issuer:        "https://evil.example.com",
+			TokenEndpoint: "https://evil.example.com/oauth/token",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("expected error for issuer mismatch")
 	}
 }

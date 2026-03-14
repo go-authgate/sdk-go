@@ -24,7 +24,8 @@ const (
 	defaultCacheTTL = 1 * time.Hour
 )
 
-// Metadata represents the OIDC Provider Metadata (RFC 8414).
+// Metadata represents a subset of the OIDC Provider Metadata (RFC 8414)
+// tailored to the fields used by the AuthGate SDK.
 type Metadata struct {
 	Issuer                           string   `json:"issuer"`
 	AuthorizationEndpoint            string   `json:"authorization_endpoint"`
@@ -54,7 +55,7 @@ func (m *Metadata) Endpoints() oauth.Endpoints {
 		DeviceAuthorizationURL: m.DeviceAuthorizationEndpoint,
 	}
 
-	// Derive tokeninfo URL from issuer if not explicitly set
+	// TokenInfoURL is always derived from issuer (not part of standard OIDC discovery)
 	if m.Issuer != "" {
 		ep.TokenInfoURL = strings.TrimRight(m.Issuer, "/") + "/oauth/tokeninfo"
 	}
@@ -77,9 +78,12 @@ type Client struct {
 type Option func(*Client)
 
 // WithHTTPClient sets a custom retry HTTP client.
+// If nil is provided, the default client is kept.
 func WithHTTPClient(httpClient *retry.Client) Option {
 	return func(c *Client) {
-		c.httpClient = httpClient
+		if httpClient != nil {
+			c.httpClient = httpClient
+		}
 	}
 }
 
@@ -103,18 +107,22 @@ func NewClient(issuerURL string, opts ...Option) (*Client, error) {
 		cacheTTL:   defaultCacheTTL,
 	}
 	for _, opt := range opts {
-		opt(c)
+		if opt != nil {
+			opt(c)
+		}
 	}
 	return c, nil
 }
 
 // Fetch retrieves the OIDC provider metadata, using the cache if still valid.
+// The returned Metadata is a copy; callers may safely modify it without
+// affecting the cached value.
 func (c *Client) Fetch(ctx context.Context) (*Metadata, error) {
 	c.mu.RLock()
 	if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
-		meta := c.cached
+		cp := *c.cached
 		c.mu.RUnlock()
-		return meta, nil
+		return &cp, nil
 	}
 	c.mu.RUnlock()
 
@@ -128,7 +136,8 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 
 	// Double-check after acquiring write lock
 	if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
-		return c.cached, nil
+		cp := *c.cached
+		return &cp, nil
 	}
 
 	discoveryURL := c.issuerURL + wellKnownPath
@@ -149,6 +158,16 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	var meta Metadata
 	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
+	}
+
+	// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
+	returnedIssuer := strings.TrimRight(meta.Issuer, "/")
+	if returnedIssuer != c.issuerURL {
+		return nil, fmt.Errorf(
+			"discovery: issuer mismatch: got %q, expected %q",
+			meta.Issuer,
+			c.issuerURL,
+		)
 	}
 
 	// AuthGate returns /oauth/device/code as device_authorization_endpoint via the
@@ -173,5 +192,6 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	c.cached = &meta
 	c.fetchedAt = time.Now()
 
-	return &meta, nil
+	cp := meta
+	return &cp, nil
 }

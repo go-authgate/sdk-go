@@ -5,10 +5,20 @@ OIDC auto-discovery client. Fetches and caches provider metadata from `/.well-kn
 ## Usage
 
 ```go
-import "github.com/go-authgate/sdk-go/discovery"
+import (
+    "github.com/go-authgate/sdk-go/discovery"
+    "github.com/go-authgate/sdk-go/oauth"
+)
 
-disco, _ := discovery.NewClient("https://auth.example.com")
-meta, _ := disco.Fetch(ctx)
+disco, err := discovery.NewClient("https://auth.example.com")
+if err != nil {
+    log.Fatal(err)
+}
+
+meta, err := disco.Fetch(ctx)
+if err != nil {
+    log.Fatal(err)
+}
 
 fmt.Println(meta.Issuer)
 fmt.Println(meta.TokenEndpoint)
@@ -16,7 +26,10 @@ fmt.Println(meta.ScopesSupported)
 
 // Convert to oauth.Endpoints for use with the oauth package:
 endpoints := meta.Endpoints()
-client, _ := oauth.NewClient("client-id", endpoints)
+client, err := oauth.NewClient("client-id", endpoints)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Options
@@ -28,11 +41,13 @@ client, _ := oauth.NewClient("client-id", endpoints)
 
 ## Types
 
-- `Metadata` — full OIDC Provider Metadata (issuer, token_endpoint, authorization_endpoint, device_authorization_endpoint, scopes_supported, etc.)
+- `Metadata` — subset of OIDC Provider Metadata covering the fields used by AuthGate SDK (issuer, token_endpoint, authorization_endpoint, device_authorization_endpoint, scopes_supported, etc.)
 - `Client` — discovery client with built-in caching
 
 ## Behavior
 
 - Caches metadata for the configured TTL (default 1 hour)
 - Thread-safe — multiple goroutines can call `Fetch()` concurrently
+- Returns a defensive copy — callers may safely modify the returned `Metadata` without affecting the cache
+- Validates that the returned issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
 - Automatically derives `device_authorization_endpoint` and `introspection_endpoint` from the issuer URL if not explicitly advertised
