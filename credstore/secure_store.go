@@ -51,7 +51,6 @@ func DefaultSecureStore[T any](
 // All methods are safe for concurrent use.
 type SecureStore[T any] struct {
 	mu         sync.RWMutex
-	primary    Store[T]
 	kr         Store[T]
 	file       Store[T]
 	prober     Prober // nil if kr does not implement Prober
@@ -73,11 +72,9 @@ func NewSecureStore[T any](kr, file Store[T], opts ...SecureStoreOption[T]) *Sec
 		}
 	}
 	if s.prober != nil && s.prober.Probe() {
-		s.primary = kr
 		s.useKeyring = true
 		// no callback: keyring is the intended path, not a fallback
 	} else {
-		s.primary = file
 		s.useKeyring = false
 		if s.onChange != nil {
 			s.onChange(file.String()) // safe: struct not yet shared
@@ -92,7 +89,10 @@ func NewSecureStore[T any](kr, file Store[T], opts ...SecureStoreOption[T]) *Sec
 func (s *SecureStore[T]) active() Store[T] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.primary
+	if s.useKeyring {
+		return s.kr
+	}
+	return s.file
 }
 
 // Refresh re-probes the keyring backend and switches the active store if the
@@ -113,12 +113,11 @@ func (s *SecureStore[T]) Refresh() bool {
 		s.mu.Unlock()
 		return false
 	}
+	s.useKeyring = keyringAvailable
 	var newBackend string
 	if keyringAvailable {
-		s.primary, s.useKeyring = s.kr, true
 		newBackend = s.kr.String()
 	} else {
-		s.primary, s.useKeyring = s.file, false
 		newBackend = s.file.String()
 	}
 	cb := s.onChange // capture under the lock
@@ -141,8 +140,12 @@ func (s *SecureStore[T]) UseKeyring() bool {
 func (s *SecureStore[T]) Diagnostic() Diagnostics {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	backend := s.file
+	if s.useKeyring {
+		backend = s.kr
+	}
 	return Diagnostics{
-		Backend:    s.primary.String(),
+		Backend:    backend.String(),
 		UseKeyring: s.useKeyring,
 		CanProbe:   s.prober != nil,
 	}
