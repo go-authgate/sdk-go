@@ -7,11 +7,14 @@ package authflow
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -32,7 +35,11 @@ type DefaultDeviceFlowHandler struct{}
 
 // DisplayCode prints instructions for the user.
 func (h DefaultDeviceFlowHandler) DisplayCode(auth *oauth.DeviceAuth) error {
-	fmt.Printf("Open %s in your browser and enter code: %s\n", auth.VerificationURI, auth.UserCode)
+	fmt.Printf(
+		"Open %s in your browser and enter code: %s\n",
+		auth.VerificationURI,
+		auth.UserCode,
+	)
 	return nil
 }
 
@@ -70,7 +77,9 @@ func RunDeviceFlow(
 		handler: DefaultDeviceFlowHandler{},
 	}
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 
 	auth, err := client.RequestDeviceCode(ctx, scopes)
@@ -105,6 +114,8 @@ func pollDeviceCode(
 	}
 
 	deadline := time.Now().Add(time.Duration(auth.ExpiresIn) * time.Second)
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 
 	for {
 		if time.Now().After(deadline) {
@@ -114,7 +125,7 @@ func pollDeviceCode(
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(interval):
+		case <-timer.C:
 		}
 
 		token, err := client.ExchangeDeviceCode(ctx, auth.DeviceCode)
@@ -123,9 +134,11 @@ func pollDeviceCode(
 			if errors.As(err, &oauthErr) {
 				switch oauthErr.Code {
 				case "authorization_pending":
+					timer.Reset(interval)
 					continue
 				case "slow_down":
 					interval += 5 * time.Second
+					timer.Reset(interval)
 					continue
 				case "expired_token":
 					return nil, errors.New("authflow: device code expired")
@@ -140,8 +153,17 @@ func pollDeviceCode(
 	}
 }
 
+// generateState produces a cryptographically random state string for CSRF protection.
+func generateState() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // RunAuthCodeFlow executes the Authorization Code + PKCE flow:
-// generate PKCE, start local callback server, open browser, exchange code.
+// generate PKCE + state, start local callback server, open browser, exchange code.
 func RunAuthCodeFlow(
 	ctx context.Context,
 	client *oauth.Client,
@@ -150,6 +172,11 @@ func RunAuthCodeFlow(
 	pkce, err := NewPKCE()
 	if err != nil {
 		return nil, fmt.Errorf("authflow: generate PKCE: %w", err)
+	}
+
+	state, err := generateState()
+	if err != nil {
+		return nil, fmt.Errorf("authflow: generate state: %w", err)
 	}
 
 	// Find a free port for the callback server
@@ -163,27 +190,45 @@ func RunAuthCodeFlow(
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
+	// Use sync.Once to ensure only the first callback is processed.
+	// Browser retries or user refreshes are safely ignored.
+	var once sync.Once
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			errMsg := r.URL.Query().Get("error")
-			errDesc := r.URL.Query().Get("error_description")
-			if errMsg == "" {
-				errMsg = "no code received"
+		once.Do(func() {
+			// Validate state parameter for CSRF protection
+			if r.URL.Query().Get("state") != state {
+				errCh <- &oauth.Error{
+					Code:        "invalid_state",
+					Description: "State parameter mismatch",
+				}
+				fmt.Fprint(
+					w,
+					"<html><body><h1>Authentication failed</h1><p>State mismatch. You can close this window.</p></body></html>",
+				)
+				return
 			}
-			errCh <- &oauth.Error{Code: errMsg, Description: errDesc}
+
+			code := r.URL.Query().Get("code")
+			if code == "" {
+				errMsg := r.URL.Query().Get("error")
+				errDesc := r.URL.Query().Get("error_description")
+				if errMsg == "" {
+					errMsg = "no code received"
+				}
+				errCh <- &oauth.Error{Code: errMsg, Description: errDesc}
+				fmt.Fprint(
+					w,
+					"<html><body><h1>Authentication failed</h1><p>You can close this window.</p></body></html>",
+				)
+				return
+			}
+			codeCh <- code
 			fmt.Fprint(
 				w,
-				"<html><body><h1>Authentication failed</h1><p>You can close this window.</p></body></html>",
+				"<html><body><h1>Authentication successful</h1><p>You can close this window.</p></body></html>",
 			)
-			return
-		}
-		codeCh <- code
-		fmt.Fprint(
-			w,
-			"<html><body><h1>Authentication successful</h1><p>You can close this window.</p></body></html>",
-		)
+		})
 	})
 
 	server := &http.Server{Handler: mux}
@@ -205,6 +250,7 @@ func RunAuthCodeFlow(
 		"client_id":             {client.ClientID()},
 		"redirect_uri":          {redirectURI},
 		"scope":                 {joinScopes(scopes)},
+		"state":                 {state},
 		"code_challenge":        {pkce.Challenge},
 		"code_challenge_method": {pkce.Method},
 	}
@@ -271,7 +317,9 @@ func NewTokenSource(client *oauth.Client, opts ...TokenSourceOption) *TokenSourc
 		clientID: client.ClientID(),
 	}
 	for _, opt := range opts {
-		opt(ts)
+		if opt != nil {
+			opt(ts)
+		}
 	}
 	return ts
 }
@@ -284,6 +332,10 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	// Try loading from store
 	if ts.store != nil {
 		stored, err := ts.store.Load(ts.clientID)
+		if err != nil && !errors.Is(err, credstore.ErrNotFound) {
+			return nil, fmt.Errorf("authflow: load token: %w", err)
+		}
+
 		if err == nil && stored.IsValid() {
 			return credstoreToOAuth(&stored), nil
 		}
@@ -291,10 +343,13 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 		// Try refreshing if we have a refresh token
 		if err == nil && stored.RefreshToken != "" {
 			refreshed, refreshErr := ts.client.RefreshToken(ctx, stored.RefreshToken)
-			if refreshErr == nil {
-				ts.saveToken(refreshed)
-				return refreshed, nil
+			if refreshErr != nil {
+				return nil, fmt.Errorf("authflow: refresh token: %w", refreshErr)
 			}
+			if saveErr := ts.saveToken(refreshed); saveErr != nil {
+				return nil, fmt.Errorf("authflow: save refreshed token: %w", saveErr)
+			}
+			return refreshed, nil
 		}
 	}
 
@@ -302,17 +357,17 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 }
 
 // SaveToken persists a token to the store (if configured).
-func (ts *TokenSource) SaveToken(token *oauth.Token) {
+func (ts *TokenSource) SaveToken(token *oauth.Token) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	ts.saveToken(token)
+	return ts.saveToken(token)
 }
 
-func (ts *TokenSource) saveToken(token *oauth.Token) {
+func (ts *TokenSource) saveToken(token *oauth.Token) error {
 	if ts.store == nil {
-		return
+		return nil
 	}
-	_ = ts.store.Save(ts.clientID, oauthToCredstore(token, ts.clientID))
+	return ts.store.Save(ts.clientID, oauthToCredstore(token, ts.clientID))
 }
 
 func credstoreToOAuth(t *credstore.Token) *oauth.Token {
@@ -355,13 +410,20 @@ func openBrowser(rawURL string) error {
 // CheckBrowserAvailability checks whether a browser can be opened.
 // Returns false in SSH sessions or environments without a display.
 func CheckBrowserAvailability() bool {
+	// Detect SSH sessions across all platforms
+	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {
+		return false
+	}
+
 	switch runtime.GOOS {
 	case "darwin":
 		return true
 	case "linux":
-		// Check for display server
-		_, err := exec.LookPath("xdg-open")
-		return err == nil
+		if _, err := exec.LookPath("xdg-open"); err != nil {
+			return false
+		}
+		// Require a display server (X11 or Wayland)
+		return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 	case "windows":
 		return true
 	default:

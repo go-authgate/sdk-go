@@ -66,7 +66,7 @@ if authflow.CheckBrowserAvailability() {
 
 | Option                     | Description                              |
 | -------------------------- | ---------------------------------------- |
-| `WithOpenBrowser()`        | Automatically open verification URI      |
+| `WithOpenBrowser(bool)`    | Automatically open verification URI      |
 | `WithDeviceFlowHandler()`  | Custom handler for displaying user codes |
 
 ### TokenSource
