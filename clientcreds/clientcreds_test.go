@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func setupCCServer(t *testing.T) (*httptest.Server, *oauth.Client) {
 		count := tokenCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "cc-token-" + r.PostForm.Get("scope") + "-" + itoa(int(count)),
+			"access_token": "cc-token-" + r.PostForm.Get("scope") + "-" + strconv.Itoa(int(count)),
 			"token_type":   "Bearer",
 			"expires_in":   3600,
 			"scope":        r.PostForm.Get("scope"),
@@ -91,7 +92,7 @@ func TestTokenSource_ExpiryDelta(t *testing.T) {
 		count := tokenCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "token-" + itoa(int(count)),
+			"access_token": "token-" + strconv.Itoa(int(count)),
 			"token_type":   "Bearer",
 			"expires_in":   1, // expires in 1 second
 			"scope":        "read",
@@ -170,16 +171,4 @@ func TestTokenSource_RoundTripper(t *testing.T) {
 	if rt == nil {
 		t.Fatal("RoundTripper should not be nil")
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
 }

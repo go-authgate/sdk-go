@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/go-authgate/sdk-go/oauth"
 )
 
@@ -40,8 +42,9 @@ type TokenSource struct {
 	scopes      []string
 	expiryDelta time.Duration
 
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	token *oauth.Token
+	group singleflight.Group
 }
 
 // NewTokenSource creates a new client credentials TokenSource.
@@ -51,32 +54,57 @@ func NewTokenSource(client *oauth.Client, opts ...Option) *TokenSource {
 		expiryDelta: defaultExpiryDelta,
 	}
 	for _, opt := range opts {
-		opt(ts)
+		if opt != nil {
+			opt(ts)
+		}
 	}
 	return ts
 }
 
 // Token returns a valid access token, fetching a new one if the cached token
-// is expired or about to expire.
+// is expired or about to expire. Concurrent callers share a single in-flight
+// fetch request via singleflight.
 func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-
+	// Fast path: read-lock to check cache
+	ts.mu.RLock()
 	if ts.token != nil && ts.isValid() {
-		return ts.token, nil
+		tok := ts.token
+		ts.mu.RUnlock()
+		return tok, nil
 	}
+	ts.mu.RUnlock()
 
-	token, err := ts.client.ClientCredentials(ctx, ts.scopes)
+	// Slow path: use singleflight to coalesce concurrent refresh requests
+	v, err, _ := ts.group.Do("token", func() (any, error) {
+		// Double-check under write lock
+		ts.mu.RLock()
+		if ts.token != nil && ts.isValid() {
+			tok := ts.token
+			ts.mu.RUnlock()
+			return tok, nil
+		}
+		ts.mu.RUnlock()
+
+		token, fetchErr := ts.client.ClientCredentials(ctx, ts.scopes)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("clientcreds: fetch token: %w", fetchErr)
+		}
+
+		ts.mu.Lock()
+		ts.token = token
+		ts.mu.Unlock()
+
+		return token, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("clientcreds: fetch token: %w", err)
+		return nil, err
 	}
 
-	ts.token = token
-	return token, nil
+	return v.(*oauth.Token), nil
 }
 
 // isValid reports whether the cached token is still usable.
-// Must be called with ts.mu held.
+// Must be called with ts.mu held (read or write).
 func (ts *TokenSource) isValid() bool {
 	if ts.token == nil || ts.token.AccessToken == "" {
 		return false
