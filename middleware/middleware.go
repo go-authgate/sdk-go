@@ -18,6 +18,8 @@ import (
 
 type contextKey struct{}
 
+var errTokenNotActive = &oauth.Error{Code: "invalid_token", Description: "Token is not active"}
+
 // TokenInfo holds validated token information extracted from the request.
 type TokenInfo struct {
 	UserID      string
@@ -245,7 +247,7 @@ func validateViaTokenInfo(
 	}
 
 	if !result.Active {
-		return nil, &oauth.Error{Code: "invalid_token", Description: "Token is not active"}
+		return nil, errTokenNotActive
 	}
 
 	return &TokenInfo{
@@ -268,7 +270,7 @@ func validateViaIntrospection(
 	}
 
 	if !result.Active {
-		return nil, &oauth.Error{Code: "invalid_token", Description: "Token is not active"}
+		return nil, errTokenNotActive
 	}
 
 	subjectType := "user"

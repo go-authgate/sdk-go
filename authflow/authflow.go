@@ -273,7 +273,7 @@ func RunAuthCodeFlow(
 		"response_type":         {"code"},
 		"client_id":             {client.ClientID()},
 		"redirect_uri":          {redirectURI},
-		"scope":                 {joinScopes(scopes)},
+		"scope":                 {strings.Join(scopes, " ")},
 		"state":                 {state},
 		"code_challenge":        {pkce.Challenge},
 		"code_challenge_method": {pkce.Method},
@@ -427,10 +427,6 @@ func oauthToCredstore(t *oauth.Token, clientID string) credstore.Token {
 		ExpiresAt:    t.ExpiresAt,
 		ClientID:     clientID,
 	}
-}
-
-func joinScopes(scopes []string) string {
-	return strings.Join(scopes, " ")
 }
 
 // openBrowser opens a URL in the default browser.
