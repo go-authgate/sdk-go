@@ -174,8 +174,8 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	}
 
 	// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
-	returnedIssuer := strings.TrimRight(meta.Issuer, "/")
-	if returnedIssuer != c.issuerURL {
+	issuer := strings.TrimRight(meta.Issuer, "/")
+	if issuer != c.issuerURL {
 		return nil, fmt.Errorf(
 			"discovery: issuer mismatch: got %q, expected %q",
 			meta.Issuer,
@@ -185,16 +185,13 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 
 	// AuthGate uses a fixed device authorization path. Derive it from issuer
 	// when not explicitly advertised in the discovery response.
-	if meta.DeviceAuthorizationEndpoint == "" && meta.Issuer != "" {
-		meta.DeviceAuthorizationEndpoint = strings.TrimRight(
-			meta.Issuer,
-			"/",
-		) + "/oauth/device/code"
+	if meta.DeviceAuthorizationEndpoint == "" {
+		meta.DeviceAuthorizationEndpoint = issuer + "/oauth/device/code"
 	}
 
 	// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
-	if meta.IntrospectionEndpoint == "" && meta.Issuer != "" {
-		meta.IntrospectionEndpoint = strings.TrimRight(meta.Issuer, "/") + "/oauth/introspect"
+	if meta.IntrospectionEndpoint == "" {
+		meta.IntrospectionEndpoint = issuer + "/oauth/introspect"
 	}
 
 	c.cached = &meta

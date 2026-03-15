@@ -104,25 +104,20 @@ type errorResponse struct {
 func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 	var oauthErr *oauth.Error
 	if errors.As(err, &oauthErr) {
-		switch oauthErr.Code {
-		case "server_error":
+		if oauthErr.Code == "server_error" {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{
 				Error:       oauthErr.Code,
 				Description: oauthErr.Description,
 			})
-		case "missing_token", "invalid_token":
-			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
-			writeJSON(w, http.StatusUnauthorized, errorResponse{
-				Error:       oauthErr.Code,
-				Description: oauthErr.Description,
-			})
-		default:
-			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
-			writeJSON(w, http.StatusUnauthorized, errorResponse{
-				Error:       oauthErr.Code,
-				Description: oauthErr.Description,
-			})
+			return
 		}
+
+		// All other OAuth errors → 401 with WWW-Authenticate
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		writeJSON(w, http.StatusUnauthorized, errorResponse{
+			Error:       oauthErr.Code,
+			Description: oauthErr.Description,
+		})
 		return
 	}
 

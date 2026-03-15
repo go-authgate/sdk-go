@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/go-authgate/sdk-go/credstore"
 	"github.com/go-authgate/sdk-go/oauth"
 )
@@ -318,10 +320,12 @@ func WithStore(store credstore.Store[credstore.Token]) TokenSourceOption {
 }
 
 // TokenSource provides automatic token refresh with optional persistent storage.
+// Concurrent callers share a single in-flight refresh request via singleflight.
 type TokenSource struct {
 	client *oauth.Client
 	store  credstore.Store[credstore.Token]
-	mu     sync.Mutex
+	mu     sync.RWMutex
+	group  singleflight.Group
 }
 
 // NewTokenSource creates a new TokenSource that automatically refreshes tokens.
@@ -338,41 +342,64 @@ func NewTokenSource(client *oauth.Client, opts ...TokenSourceOption) *TokenSourc
 }
 
 // Token returns a valid token, refreshing from store or server as needed.
+// Concurrent callers share a single in-flight refresh request via singleflight.
 func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-
-	// Try loading from store
+	// Fast path: read-lock to check for a valid cached token
 	if ts.store != nil {
+		ts.mu.RLock()
 		stored, err := ts.store.Load(ts.client.ClientID())
-		if err != nil && !errors.Is(err, credstore.ErrNotFound) {
-			return nil, fmt.Errorf("authflow: load token: %w", err)
-		}
-
+		ts.mu.RUnlock()
 		if err == nil && stored.IsValid() {
 			return credstoreToOAuth(&stored), nil
 		}
-
-		// Try refreshing if we have a refresh token
-		if err == nil && stored.RefreshToken != "" {
-			refreshed, refreshErr := ts.client.RefreshToken(ctx, stored.RefreshToken)
-			if refreshErr != nil {
-				return nil, fmt.Errorf("authflow: refresh token: %w", refreshErr)
-			}
-			if saveErr := ts.saveToken(refreshed); saveErr != nil {
-				return nil, fmt.Errorf("authflow: save refreshed token: %w", saveErr)
-			}
-			return refreshed, nil
-		}
 	}
 
-	return nil, errors.New("authflow: no valid token available, re-authentication required")
+	// Slow path: use singleflight to coalesce concurrent refresh requests
+	v, err, _ := ts.group.Do("token", func() (any, error) {
+		// Re-check after acquiring the singleflight slot
+		if ts.store != nil {
+			ts.mu.RLock()
+			stored, err := ts.store.Load(ts.client.ClientID())
+			ts.mu.RUnlock()
+			if err == nil && stored.IsValid() {
+				return credstoreToOAuth(&stored), nil
+			}
+
+			if err != nil && !errors.Is(err, credstore.ErrNotFound) {
+				return nil, fmt.Errorf("authflow: load token: %w", err)
+			}
+
+			// Try refreshing if we have a refresh token
+			if err == nil && stored.RefreshToken != "" {
+				refreshed, refreshErr := ts.client.RefreshToken(ctx, stored.RefreshToken)
+				if refreshErr != nil {
+					return nil, fmt.Errorf("authflow: refresh token: %w", refreshErr)
+				}
+
+				ts.mu.Lock()
+				saveErr := ts.saveToken(refreshed)
+				ts.mu.Unlock()
+				if saveErr != nil {
+					return nil, fmt.Errorf("authflow: save refreshed token: %w", saveErr)
+				}
+				return refreshed, nil
+			}
+		}
+
+		return nil, errors.New("authflow: no valid token available, re-authentication required")
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return v.(*oauth.Token), nil
 }
 
 // SaveToken persists a token to the store (if configured).
 func (ts *TokenSource) SaveToken(token *oauth.Token) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
+
 	return ts.saveToken(token)
 }
 
