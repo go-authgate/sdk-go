@@ -6,7 +6,7 @@
 [![codecov](https://codecov.io/gh/go-authgate/sdk-go/branch/main/graph/badge.svg)](https://codecov.io/gh/go-authgate/sdk-go)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-authgate/sdk-go.svg)](https://pkg.go.dev/github.com/go-authgate/sdk-go)
 
-Go SDK for [AuthGate](https://github.com/go-authgate).
+Go SDK for [AuthGate](https://github.com/go-authgate). Requires Go 1.25+.
 
 ## Installation
 
@@ -16,26 +16,26 @@ go get github.com/go-authgate/sdk-go
 
 ## Packages
 
-| Package                     | Description                                                                                                |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| [credstore](credstore/)     | Secure credential storage with OS keyring integration and file-based fallback                              |
-| [oauth](oauth/)             | OAuth 2.0 token client (Device Code, Auth Code, Client Credentials, Refresh, Revoke, Introspect, UserInfo) |
-| [discovery](discovery/)     | OIDC auto-discovery from `/.well-known/openid-configuration` with caching                                  |
-| [authflow](authflow/)       | CLI flow orchestration (Device Code polling, Auth Code + PKCE, auto-refresh TokenSource)                   |
-| [middleware](middleware/)   | `net/http` Bearer token validation middleware (compatible with any Go HTTP framework)                      |
-| [clientcreds](clientcreds/) | Thread-safe Client Credentials token source with auto-cache for M2M authentication                         |
+| Package                     | Description                                                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| [credstore](credstore/)     | Secure credential storage with OS keyring integration and file-based fallback                                    |
+| [oauth](oauth/)             | OAuth 2.0 token client (Device Code, Auth Code, Client Credentials, Refresh, Revoke, Introspect, UserInfo)       |
+| [discovery](discovery/)     | OIDC auto-discovery from `/.well-known/openid-configuration` with caching                                        |
+| [authflow](authflow/)       | CLI flow orchestration (Device Code polling, Auth Code + PKCE, auto-refresh TokenSource with persistent storage) |
+| [middleware](middleware/)   | `net/http` Bearer token validation middleware with `BearerAuth` and `RequireScope` (any Go HTTP framework)       |
+| [clientcreds](clientcreds/) | Thread-safe Client Credentials token source with auto-cache, `HTTPClient()` and `RoundTripper()` for M2M         |
 
 ### Package dependency graph
 
 ```txt
 credstore (storage)     discovery (OIDC endpoint URLs)
-    |                       |
-    v                       v
-    +------> oauth <--------+
-             / | \
-            /  |  \
-           v   v   v
-   authflow  middleware  clientcreds
+    |    \                  |
+    |     \                 v
+    |      +----> oauth <---+
+    |              / | \
+    |             /  |  \
+    v            v   v   v
+    +------> authflow  middleware  clientcreds
 ```
 
 ## Development
