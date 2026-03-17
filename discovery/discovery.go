@@ -15,6 +15,7 @@ import (
 	"time"
 
 	retry "github.com/appleboy/go-httpretry"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/go-authgate/sdk-go/oauth"
 )
@@ -86,6 +87,7 @@ type Client struct {
 	mu        sync.RWMutex
 	cached    *Metadata
 	fetchedAt time.Time
+	group     singleflight.Group
 }
 
 // Option configures a discovery Client.
@@ -144,58 +146,70 @@ func (c *Client) Fetch(ctx context.Context) (*Metadata, error) {
 }
 
 // refresh fetches fresh metadata from the discovery endpoint.
+// singleflight coalesces concurrent misses into one HTTP request; the lock is
+// held only for the cache check and cache update, not during the network call.
 func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	v, err, _ := c.group.Do("fetch", func() (any, error) {
+		// Double-check after coalescing into the singleflight slot.
+		c.mu.RLock()
+		if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
+			cp := cloneMetadata(c.cached)
+			c.mu.RUnlock()
+			return cp, nil
+		}
+		c.mu.RUnlock()
 
-	// Double-check after acquiring write lock
-	if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
-		return cloneMetadata(c.cached), nil
-	}
+		// HTTP fetch happens outside any lock.
+		discoveryURL := c.issuerURL + wellKnownPath
+		resp, err := c.httpClient.Get(ctx, discoveryURL)
+		if err != nil {
+			return nil, fmt.Errorf("discovery: fetch %s: %w", discoveryURL, err)
+		}
+		defer resp.Body.Close()
 
-	discoveryURL := c.issuerURL + wellKnownPath
-	resp, err := c.httpClient.Get(ctx, discoveryURL)
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf(
+				"discovery: unexpected status %d from %s",
+				resp.StatusCode,
+				discoveryURL,
+			)
+		}
+
+		var meta Metadata
+		if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+			return nil, fmt.Errorf("discovery: decode response: %w", err)
+		}
+
+		// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
+		issuer := strings.TrimRight(meta.Issuer, "/")
+		if issuer != c.issuerURL {
+			return nil, fmt.Errorf(
+				"discovery: issuer mismatch: got %q, expected %q",
+				meta.Issuer,
+				c.issuerURL,
+			)
+		}
+
+		// AuthGate uses a fixed device authorization path. Derive it from issuer
+		// when not explicitly advertised in the discovery response.
+		if meta.DeviceAuthorizationEndpoint == "" {
+			meta.DeviceAuthorizationEndpoint = issuer + "/oauth/device/code"
+		}
+
+		// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
+		if meta.IntrospectionEndpoint == "" {
+			meta.IntrospectionEndpoint = issuer + "/oauth/introspect"
+		}
+
+		c.mu.Lock()
+		c.cached = &meta
+		c.fetchedAt = time.Now()
+		c.mu.Unlock()
+
+		return cloneMetadata(&meta), nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("discovery: fetch %s: %w", discoveryURL, err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"discovery: unexpected status %d from %s",
-			resp.StatusCode,
-			discoveryURL,
-		)
-	}
-
-	var meta Metadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return nil, fmt.Errorf("discovery: decode response: %w", err)
-	}
-
-	// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
-	issuer := strings.TrimRight(meta.Issuer, "/")
-	if issuer != c.issuerURL {
-		return nil, fmt.Errorf(
-			"discovery: issuer mismatch: got %q, expected %q",
-			meta.Issuer,
-			c.issuerURL,
-		)
-	}
-
-	// AuthGate uses a fixed device authorization path. Derive it from issuer
-	// when not explicitly advertised in the discovery response.
-	if meta.DeviceAuthorizationEndpoint == "" {
-		meta.DeviceAuthorizationEndpoint = issuer + "/oauth/device/code"
-	}
-
-	// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
-	if meta.IntrospectionEndpoint == "" {
-		meta.IntrospectionEndpoint = issuer + "/oauth/introspect"
-	}
-
-	c.cached = &meta
-	c.fetchedAt = time.Now()
-
-	return cloneMetadata(&meta), nil
+	return v.(*Metadata), nil
 }
