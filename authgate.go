@@ -4,6 +4,7 @@ package authgate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/go-authgate/sdk-go/authflow"
@@ -79,12 +80,16 @@ func WithFlowMode(mode FlowMode) Option {
 //	    os.Getenv("CLIENT_ID"),
 //	    authgate.WithScopes("profile", "email"),
 //	)
-func New(ctx context.Context, authgateURL, clientID string, opts ...Option) (*oauth.Client, *oauth.Token, error) {
+func New(
+	ctx context.Context,
+	authgateURL, clientID string,
+	opts ...Option,
+) (*oauth.Client, *oauth.Token, error) {
 	if authgateURL == "" {
-		return nil, nil, fmt.Errorf("authgate: authgateURL is required")
+		return nil, nil, errors.New("authgate: authgateURL is required")
 	}
 	if clientID == "" {
-		return nil, nil, fmt.Errorf("authgate: clientID is required")
+		return nil, nil, errors.New("authgate: clientID is required")
 	}
 
 	cfg := &config{
