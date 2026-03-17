@@ -80,6 +80,13 @@ func WithFlowMode(mode FlowMode) Option {
 //	    authgate.WithScopes("profile", "email"),
 //	)
 func New(ctx context.Context, authgateURL, clientID string, opts ...Option) (*oauth.Client, *oauth.Token, error) {
+	if authgateURL == "" {
+		return nil, nil, fmt.Errorf("authgate: authgateURL is required")
+	}
+	if clientID == "" {
+		return nil, nil, fmt.Errorf("authgate: clientID is required")
+	}
+
 	cfg := &config{
 		scopes:      []string{},
 		serviceName: "authgate",
