@@ -190,6 +190,9 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 		}
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
 	}
+	if lr.N == 0 {
+		return nil, fmt.Errorf("discovery: response body exceeds %d bytes", maxResponseBytes)
+	}
 
 	// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
 	issuer := strings.TrimRight(meta.Issuer, "/")
