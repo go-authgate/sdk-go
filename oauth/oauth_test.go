@@ -503,3 +503,62 @@ func TestRequestDeviceCode_NoEndpoint(t *testing.T) {
 		t.Fatal("expected error for missing endpoint")
 	}
 }
+
+func TestResponseBodyTooLarge(t *testing.T) {
+	// Serve a JSON response larger than maxResponseBytes (1 MB)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Write a valid JSON prefix followed by a huge padding string
+		w.Write([]byte(`{"access_token":"`))
+		padding := make([]byte, maxResponseBytes+1)
+		for i := range padding {
+			padding[i] = 'A'
+		}
+		w.Write(padding)
+		w.Write([]byte(`"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test", Endpoints{TokenURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.ClientCredentials(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for oversized response")
+	}
+	if !errors.Is(err, errResponseTooLarge) {
+		t.Errorf("expected errResponseTooLarge, got: %v", err)
+	}
+}
+
+func TestErrorResponseBodyTooLarge(t *testing.T) {
+	// Serve an error response larger than maxResponseBytes
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		padding := make([]byte, maxResponseBytes+1)
+		for i := range padding {
+			padding[i] = 'X'
+		}
+		w.Write(padding)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test", Endpoints{TokenURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.ClientCredentials(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for oversized error response")
+	}
+	var oauthErr *Error
+	if !errors.As(err, &oauthErr) {
+		t.Fatalf("expected *Error, got %T: %v", err, err)
+	}
+	if oauthErr.Description != "error response body exceeds size limit" {
+		t.Errorf("unexpected description: %s", oauthErr.Description)
+	}
+}

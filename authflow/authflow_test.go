@@ -208,6 +208,71 @@ func TestRunAuthCodeFlow(t *testing.T) {
 	}
 }
 
+func TestRunAuthCodeFlow_DuplicateCallback(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	state := "test-state"
+	var once sync.Once
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		handled := false
+		once.Do(func() {
+			handled = true
+			if r.URL.Query().Get("state") != state {
+				errCh <- &oauth.Error{Code: "invalid_state"}
+				return
+			}
+			codeCh <- r.URL.Query().Get("code")
+			w.Write([]byte("<html><body><h1>Authentication successful</h1></body></html>"))
+		})
+		if !handled {
+			w.Write(
+				[]byte(
+					"<html><body><p>Already processed. You can close this window.</p></body></html>",
+				),
+			)
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// First callback — should be processed
+	resp, err := http.Get(server.URL + "/callback?code=my-code&state=test-state")
+	if err != nil {
+		t.Fatalf("first callback: %v", err)
+	}
+	body := make([]byte, 1024)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	if !strings.Contains(string(body[:n]), "Authentication successful") {
+		t.Errorf("first response should contain success message, got: %s", string(body[:n]))
+	}
+
+	// Second callback — should get "Already processed"
+	resp, err = http.Get(server.URL + "/callback?code=other-code&state=test-state")
+	if err != nil {
+		t.Fatalf("second callback: %v", err)
+	}
+	body = make([]byte, 1024)
+	n, _ = resp.Body.Read(body)
+	resp.Body.Close()
+	if !strings.Contains(string(body[:n]), "Already processed") {
+		t.Errorf("second response should contain 'Already processed', got: %s", string(body[:n]))
+	}
+
+	// Verify only the first code was sent
+	select {
+	case code := <-codeCh:
+		if code != "my-code" {
+			t.Errorf("code = %q, want %q", code, "my-code")
+		}
+	default:
+		t.Error("expected code from first callback")
+	}
+}
+
 func TestRunAuthCodeFlow_InvalidState(t *testing.T) {
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)

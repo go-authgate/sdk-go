@@ -33,11 +33,11 @@ func limitedBody(r io.Reader) *io.LimitedReader {
 	return &io.LimitedReader{R: r, N: maxResponseBytes}
 }
 
-// checkLimitExceeded returns errResponseTooLarge if the LimitedReader was
-// exhausted (N <= 0), indicating the response was truncated.
+// checkLimitExceeded returns errResponseTooLarge wrapped with the original
+// decode error context if the LimitedReader was exhausted (N <= 0).
 func checkLimitExceeded(lr *io.LimitedReader, decodeErr error) error {
 	if decodeErr != nil && lr.N <= 0 {
-		return errResponseTooLarge
+		return fmt.Errorf("%w: %v", errResponseTooLarge, decodeErr)
 	}
 	return decodeErr
 }
@@ -441,6 +441,16 @@ func parseErrorResponse(resp *http.Response) error {
 		return &Error{
 			Code:        "server_error",
 			Description: "failed to read error response",
+			StatusCode:  resp.StatusCode,
+		}
+	}
+
+	// If the read hit the limit, return a dedicated error instead of
+	// propagating a huge truncated body in the error description.
+	if lr.N <= 0 {
+		return &Error{
+			Code:        "server_error",
+			Description: "error response body exceeds size limit",
 			StatusCode:  resp.StatusCode,
 		}
 	}
