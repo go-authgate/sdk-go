@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -22,6 +23,15 @@ import (
 const (
 	wellKnownPath   = "/.well-known/openid-configuration"
 	defaultCacheTTL = 1 * time.Hour
+
+	// maxResponseBytes caps the discovery response read size.
+	maxResponseBytes = 1 << 20 // 1 MB
+
+	// AuthGate-specific endpoint paths derived from the issuer URL
+	// when not advertised in the discovery document.
+	deviceCodePath    = "/oauth/device/code"
+	introspectionPath = "/oauth/introspect"
+	tokenInfoPath     = "/oauth/tokeninfo"
 )
 
 // Metadata represents a subset of the OIDC Provider Metadata (RFC 8414)
@@ -71,7 +81,7 @@ func (m *Metadata) Endpoints() oauth.Endpoints {
 
 	// TokenInfoURL is always derived from issuer (not part of standard OIDC discovery)
 	if m.Issuer != "" {
-		ep.TokenInfoURL = strings.TrimRight(m.Issuer, "/") + "/oauth/tokeninfo"
+		ep.TokenInfoURL = strings.TrimRight(m.Issuer, "/") + tokenInfoPath
 	}
 
 	return ep
@@ -169,7 +179,8 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	}
 
 	var meta Metadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
+		Decode(&meta); err != nil {
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
 	}
 
@@ -186,12 +197,12 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	// AuthGate uses a fixed device authorization path. Derive it from issuer
 	// when not explicitly advertised in the discovery response.
 	if meta.DeviceAuthorizationEndpoint == "" {
-		meta.DeviceAuthorizationEndpoint = issuer + "/oauth/device/code"
+		meta.DeviceAuthorizationEndpoint = issuer + deviceCodePath
 	}
 
 	// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
 	if meta.IntrospectionEndpoint == "" {
-		meta.IntrospectionEndpoint = issuer + "/oauth/introspect"
+		meta.IntrospectionEndpoint = issuer + introspectionPath
 	}
 
 	c.cached = &meta

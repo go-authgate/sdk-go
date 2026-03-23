@@ -19,6 +19,10 @@ import (
 	retry "github.com/appleboy/go-httpretry"
 )
 
+// maxResponseBytes caps the amount of data read from any single HTTP response
+// to prevent denial-of-service via unbounded response bodies.
+const maxResponseBytes = 1 << 20 // 1 MB
+
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).
 type Token struct {
 	AccessToken  string `json:"access_token"`
@@ -100,7 +104,7 @@ type Error struct {
 // Error implements the error interface.
 func (e *Error) Error() string {
 	if e.Description != "" {
-		return fmt.Sprintf("oauth: %s: %s", e.Code, e.Description)
+		return "oauth: " + e.Code + ": " + e.Description
 	}
 	return "oauth: " + e.Code
 }
@@ -233,9 +237,11 @@ func (c *Client) ExchangeAuthCode(
 // ClientCredentials requests a token using client credentials (RFC 6749 §4.4).
 func (c *Client) ClientCredentials(ctx context.Context, scopes []string) (*Token, error) {
 	data := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {c.clientID},
-		"client_secret": {c.clientSecret},
+		"grant_type": {"client_credentials"},
+		"client_id":  {c.clientID},
+	}
+	if c.clientSecret != "" {
+		data.Set("client_secret", c.clientSecret)
 	}
 	if len(scopes) > 0 {
 		data.Set("scope", strings.Join(scopes, " "))
@@ -292,9 +298,11 @@ func (c *Client) Introspect(ctx context.Context, token string) (*IntrospectionRe
 	}
 
 	data := url.Values{
-		"token":         {token},
-		"client_id":     {c.clientID},
-		"client_secret": {c.clientSecret},
+		"token":     {token},
+		"client_id": {c.clientID},
+	}
+	if c.clientSecret != "" {
+		data.Set("client_secret", c.clientSecret)
 	}
 
 	var result IntrospectionResult
@@ -323,7 +331,8 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 	}
 
 	var info UserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
+		Decode(&info); err != nil {
 		return nil, fmt.Errorf("oauth: decode userinfo response: %w", err)
 	}
 	return &info, nil
@@ -351,7 +360,8 @@ func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*Tok
 	}
 
 	var info TokenInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
+		Decode(&info); err != nil {
 		return nil, fmt.Errorf("oauth: decode tokeninfo response: %w", err)
 	}
 	return &info, nil
@@ -390,7 +400,8 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 		return parseErrorResponse(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
+		Decode(result); err != nil {
 		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
 	}
 	return nil
@@ -398,7 +409,7 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 
 // parseErrorResponse reads an OAuth error response body.
 func parseErrorResponse(resp *http.Response) error {
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return &Error{
 			Code:        "server_error",
