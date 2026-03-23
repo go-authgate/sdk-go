@@ -119,22 +119,26 @@ func WithCacheTTL(ttl time.Duration) Option {
 }
 
 // NewClient creates a new OIDC discovery client.
+// A default retry HTTP client is created only when no client is provided via WithHTTPClient.
 func NewClient(issuerURL string, opts ...Option) (*Client, error) {
-	httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
-	if err != nil {
-		return nil, fmt.Errorf("discovery: create http client: %w", err)
-	}
-
 	c := &Client{
-		issuerURL:  strings.TrimRight(issuerURL, "/"),
-		httpClient: httpClient,
-		cacheTTL:   defaultCacheTTL,
+		issuerURL: strings.TrimRight(issuerURL, "/"),
+		cacheTTL:  defaultCacheTTL,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(c)
 		}
 	}
+
+	if c.httpClient == nil {
+		httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
+		if err != nil {
+			return nil, fmt.Errorf("discovery: create http client: %w", err)
+		}
+		c.httpClient = httpClient
+	}
+
 	return c, nil
 }
 
@@ -179,8 +183,11 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	}
 
 	var meta Metadata
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
-		Decode(&meta); err != nil {
+	lr := &io.LimitedReader{R: resp.Body, N: maxResponseBytes}
+	if err := json.NewDecoder(lr).Decode(&meta); err != nil {
+		if lr.N <= 0 {
+			return nil, fmt.Errorf("discovery: response body exceeds %d bytes", maxResponseBytes)
+		}
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
 	}
 

@@ -232,6 +232,71 @@ func TestClientCredentials(t *testing.T) {
 	}
 }
 
+func TestClientCredentials_EmptySecret(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if r.PostForm.Has("client_secret") {
+			t.Errorf(
+				"client_secret should not be sent when empty, got %q",
+				r.PostForm.Get("client_secret"),
+			)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "cc-access-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test-client", Endpoints{TokenURL: server.URL + "/oauth/token"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	token, err := client.ClientCredentials(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ClientCredentials: %v", err)
+	}
+	if token.AccessToken != "cc-access-token" {
+		t.Errorf("AccessToken = %q, want %q", token.AccessToken, "cc-access-token")
+	}
+}
+
+func TestIntrospect_EmptySecret(t *testing.T) {
+	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if r.PostForm.Has("client_secret") {
+			t.Errorf(
+				"client_secret should not be sent when empty, got %q",
+				r.PostForm.Get("client_secret"),
+			)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"active":    true,
+			"scope":     "read",
+			"client_id": "test-client",
+			"sub":       "user-123",
+		})
+	})
+
+	result, err := client.Introspect(context.Background(), "some-token")
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+	if !result.Active {
+		t.Error("expected active=true")
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
 	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {

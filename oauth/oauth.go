@@ -23,6 +23,25 @@ import (
 // to prevent denial-of-service via unbounded response bodies.
 const maxResponseBytes = 1 << 20 // 1 MB
 
+// errResponseTooLarge is returned when a server response exceeds maxResponseBytes.
+var errResponseTooLarge = fmt.Errorf("oauth: response body exceeds %d bytes", maxResponseBytes)
+
+// limitedBody returns an io.Reader that reads up to maxResponseBytes from r.
+// If the limit is reached, subsequent JSON decode errors are wrapped with a
+// clear message instead of a confusing "unexpected EOF".
+func limitedBody(r io.Reader) *io.LimitedReader {
+	return &io.LimitedReader{R: r, N: maxResponseBytes}
+}
+
+// checkLimitExceeded returns errResponseTooLarge if the LimitedReader was
+// exhausted (N <= 0), indicating the response was truncated.
+func checkLimitExceeded(lr *io.LimitedReader, decodeErr error) error {
+	if decodeErr != nil && lr.N <= 0 {
+		return errResponseTooLarge
+	}
+	return decodeErr
+}
+
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).
 type Token struct {
 	AccessToken  string `json:"access_token"`
@@ -149,22 +168,26 @@ func WithHTTPClient(httpClient *retry.Client) Option {
 }
 
 // NewClient creates a new OAuth 2.0 client.
+// A default retry HTTP client is created only when no client is provided via WithHTTPClient.
 func NewClient(clientID string, endpoints Endpoints, opts ...Option) (*Client, error) {
-	httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
-	if err != nil {
-		return nil, fmt.Errorf("oauth: create http client: %w", err)
-	}
-
 	c := &Client{
-		clientID:   clientID,
-		endpoints:  endpoints,
-		httpClient: httpClient,
+		clientID:  clientID,
+		endpoints: endpoints,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(c)
 		}
 	}
+
+	if c.httpClient == nil {
+		httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
+		if err != nil {
+			return nil, fmt.Errorf("oauth: create http client: %w", err)
+		}
+		c.httpClient = httpClient
+	}
+
 	return c, nil
 }
 
@@ -331,9 +354,9 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 	}
 
 	var info UserInfo
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
-		Decode(&info); err != nil {
-		return nil, fmt.Errorf("oauth: decode userinfo response: %w", err)
+	lr := limitedBody(resp.Body)
+	if err := json.NewDecoder(lr).Decode(&info); err != nil {
+		return nil, checkLimitExceeded(lr, fmt.Errorf("oauth: decode userinfo response: %w", err))
 	}
 	return &info, nil
 }
@@ -360,9 +383,9 @@ func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*Tok
 	}
 
 	var info TokenInfo
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
-		Decode(&info); err != nil {
-		return nil, fmt.Errorf("oauth: decode tokeninfo response: %w", err)
+	lr := limitedBody(resp.Body)
+	if err := json.NewDecoder(lr).Decode(&info); err != nil {
+		return nil, checkLimitExceeded(lr, fmt.Errorf("oauth: decode tokeninfo response: %w", err))
 	}
 	return &info, nil
 }
@@ -400,16 +423,20 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 		return parseErrorResponse(resp)
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
-		Decode(result); err != nil {
-		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
+	lr := limitedBody(resp.Body)
+	if err := json.NewDecoder(lr).Decode(result); err != nil {
+		return checkLimitExceeded(
+			lr,
+			fmt.Errorf("oauth: decode response from %s: %w", endpoint, err),
+		)
 	}
 	return nil
 }
 
 // parseErrorResponse reads an OAuth error response body.
 func parseErrorResponse(resp *http.Response) error {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	lr := limitedBody(resp.Body)
+	body, err := io.ReadAll(lr)
 	if err != nil {
 		return &Error{
 			Code:        "server_error",
