@@ -26,17 +26,18 @@ const maxResponseBytes = 1 << 20 // 1 MB
 // errResponseTooLarge is returned when a server response exceeds maxResponseBytes.
 var errResponseTooLarge = fmt.Errorf("oauth: response body exceeds %d bytes", maxResponseBytes)
 
-// limitedBody returns an io.Reader that reads up to maxResponseBytes from r.
-// If the limit is reached, subsequent JSON decode errors are wrapped with a
-// clear message instead of a confusing "unexpected EOF".
+// limitedBody returns an io.Reader that reads up to maxResponseBytes+1 from r.
+// Reading one extra byte lets us distinguish "exactly at limit" (valid) from
+// "exceeded limit" (N reaches 0 only when the body is strictly larger).
 func limitedBody(r io.Reader) *io.LimitedReader {
-	return &io.LimitedReader{R: r, N: maxResponseBytes}
+	return &io.LimitedReader{R: r, N: maxResponseBytes + 1}
 }
 
 // checkLimitExceeded returns errResponseTooLarge wrapped with the original
-// decode error context if the LimitedReader was exhausted (N <= 0).
+// decode error context if the LimitedReader was fully exhausted (N == 0),
+// meaning the response body exceeded maxResponseBytes.
 func checkLimitExceeded(lr *io.LimitedReader, decodeErr error) error {
-	if decodeErr != nil && lr.N <= 0 {
+	if decodeErr != nil && lr.N == 0 {
 		return fmt.Errorf("%w: %v", errResponseTooLarge, decodeErr)
 	}
 	return decodeErr
@@ -445,9 +446,10 @@ func parseErrorResponse(resp *http.Response) error {
 		}
 	}
 
-	// If the read hit the limit, return a dedicated error instead of
-	// propagating a huge truncated body in the error description.
-	if lr.N <= 0 {
+	// If the read exceeded the limit (N == 0 means the extra sentinel byte
+	// was consumed), return a dedicated error instead of propagating a huge
+	// truncated body in the error description.
+	if lr.N == 0 {
 		return &Error{
 			Code:        "server_error",
 			Description: "error response body exceeds size limit",

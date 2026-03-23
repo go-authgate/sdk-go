@@ -183,9 +183,9 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	}
 
 	var meta Metadata
-	lr := &io.LimitedReader{R: resp.Body, N: maxResponseBytes}
+	lr := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
 	if err := json.NewDecoder(lr).Decode(&meta); err != nil {
-		if lr.N <= 0 {
+		if lr.N == 0 {
 			return nil, fmt.Errorf("discovery: response body exceeds %d bytes", maxResponseBytes)
 		}
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
