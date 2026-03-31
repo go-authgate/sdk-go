@@ -108,8 +108,16 @@ type errorResponse struct {
 func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 	var oauthErr *oauth.Error
 	if errors.As(err, &oauthErr) {
-		if oauthErr.Code == "server_error" {
+		switch oauthErr.Code {
+		case "server_error":
 			writeJSON(w, http.StatusInternalServerError, errorResponse{
+				Error:       oauthErr.Code,
+				Description: oauthErr.Description,
+			})
+			return
+		case "insufficient_scope":
+			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
+			writeJSON(w, http.StatusForbidden, errorResponse{
 				Error:       oauthErr.Code,
 				Description: oauthErr.Description,
 			})
@@ -178,7 +186,10 @@ func BearerAuth(opts ...Option) func(http.Handler) http.Handler {
 			// Check required scopes
 			for _, scope := range cfg.requiredScopes {
 				if !info.HasScope(scope) {
-					writeInsufficientScope(w, scope)
+					cfg.errorHandler(w, r, &oauth.Error{
+						Code:        "insufficient_scope",
+						Description: "Token does not have required scope: " + scope,
+					})
 					return
 				}
 			}
