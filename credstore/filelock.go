@@ -29,8 +29,9 @@ type fileLock struct {
 // acquireFileLock acquires an exclusive lock on `<filePath>.lock`. The lock
 // file is created if missing and is left on disk after release (the file's
 // presence is not what protects access — the advisory lock is). A stranded
-// lock file from a crashed process does not block new acquirers because the
-// kernel does not hand out the advisory lock to anyone.
+// lock file from a crashed process does not block new acquirers because once
+// no process holds the advisory lock, including after a crash, it becomes
+// immediately available to be acquired again.
 func acquireFileLock(filePath string) (*fileLock, error) {
 	lockPath := filePath + ".lock"
 
@@ -52,6 +53,6 @@ func acquireFileLock(filePath string) (*fileLock, error) {
 }
 
 // release drops the advisory lock. The lock file itself is left on disk.
-func (fl *fileLock) release() error {
-	return fl.fl.Unlock()
+func (l *fileLock) release() error {
+	return l.fl.Unlock()
 }
