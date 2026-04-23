@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestAcquireAndRelease(t *testing.T) {
@@ -26,9 +25,13 @@ func TestAcquireAndRelease(t *testing.T) {
 		t.Errorf("release() error: %v", err)
 	}
 
-	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-		t.Error("lock file was not removed after release")
+	// The lock file is intentionally left on disk after release; advisory
+	// locking is what protects access, not the file's existence.
+	next, err := acquireFileLock(target)
+	if err != nil {
+		t.Fatalf("re-acquire after release: %v", err)
 	}
+	_ = next.release()
 }
 
 func TestConcurrentLocks(t *testing.T) {
@@ -69,7 +72,11 @@ func TestConcurrentLocks(t *testing.T) {
 	wg.Wait()
 }
 
-func TestStaleLockRemoval(t *testing.T) {
+// TestAcquireOrphanedLockFile verifies that a leftover lock file from a
+// crashed process does not block new acquirers. With kernel-level advisory
+// locking (fcntl/LockFileEx), no process holds the lock once the crashed
+// process is gone, so a new acquirer succeeds immediately.
+func TestAcquireOrphanedLockFile(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "tokens.json")
 	lockPath := target + ".lock"
@@ -78,16 +85,11 @@ func TestStaleLockRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
-
-	staleTime := time.Now().Add(-60 * time.Second)
-	if err := os.Chtimes(lockPath, staleTime, staleTime); err != nil {
-		t.Fatalf("os.Chtimes: %v", err)
-	}
+	_ = f.Close()
 
 	lock, err := acquireFileLock(target)
 	if err != nil {
-		t.Fatalf("acquireFileLock() with stale lock: %v", err)
+		t.Fatalf("acquireFileLock with orphaned file: %v", err)
 	}
 	_ = lock.release()
 }
