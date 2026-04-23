@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/appleboy/go-httpretry v0.11.0
+	github.com/gofrs/flock v0.13.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/sync v0.20.0
 )

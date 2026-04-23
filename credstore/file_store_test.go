@@ -182,12 +182,6 @@ func TestFileStore_ConcurrentWrites(t *testing.T) {
 			)
 		}
 	}
-
-	// Verify no lock files remain
-	lockPath := filePath + ".lock"
-	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-		t.Errorf("Lock file still exists after all saves completed")
-	}
 }
 
 func TestFileStore_SaveEmptyClientID(t *testing.T) {
