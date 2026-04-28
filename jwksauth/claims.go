@@ -39,10 +39,6 @@ type TokenInfo struct {
 	// Scopes is the parsed scope list (strings.Fields(Claims.Scope)) cached
 	// for fast HasScope() lookups.
 	Scopes []string
-
-	// tenant is the case-folded form of Claims.Tenant, used internally for
-	// allowlist comparison. Exposed read-only via Tenant().
-	tenant string
 }
 
 // HasScope reports whether the token carries the named OAuth scope.
@@ -53,7 +49,7 @@ func (t *TokenInfo) HasScope(scope string) bool {
 // Tenant returns the case-folded tenant code used for [AccessRule] allowlist
 // comparisons. Use t.Claims.Tenant if you need the original case.
 func (t *TokenInfo) Tenant() string {
-	return t.tenant
+	return strings.ToLower(t.Claims.Tenant)
 }
 
 // newTokenInfo decodes the AuthGate-specific Claims from a verified IDToken
@@ -67,6 +63,5 @@ func newTokenInfo(tok *oidc.IDToken) (*TokenInfo, error) {
 		IDToken: tok,
 		Claims:  extra,
 		Scopes:  strings.Fields(extra.Scope),
-		tenant:  strings.ToLower(extra.Tenant),
 	}, nil
 }

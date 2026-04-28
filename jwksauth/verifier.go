@@ -14,10 +14,8 @@ import (
 var _ TokenVerifier = (*Verifier)(nil)
 
 var (
-	errAudienceRequired = errors.New(
-		"jwksauth: audience must be non-empty (use NewVerifierSkipAudience to opt out)",
-	)
-	errIssuerURLEmpty = errors.New("jwksauth: issuerURL must be non-empty")
+	errAudienceRequired = errors.New("jwksauth: audience must be non-empty")
+	errIssuerURLEmpty   = errors.New("jwksauth: issuerURL must be non-empty")
 )
 
 // Verifier validates AuthGate access tokens issued by a single OIDC issuer.
@@ -59,7 +57,7 @@ func NewVerifier(
 ) (*Verifier, error) {
 	audience = strings.TrimSpace(audience)
 	if audience == "" {
-		return nil, errAudienceRequired
+		return nil, fmt.Errorf("%w (use NewVerifierSkipAudience to opt out)", errAudienceRequired)
 	}
 	return newVerifier(ctx, issuerURL, audience, false, opts...)
 }
@@ -96,29 +94,42 @@ func newVerifier(
 	discoverCtx, cancel := context.WithTimeout(ctx, cfg.discoveryTimeout)
 	defer cancel()
 
-	// oidc.NewProvider validates that the returned `issuer` matches the URL
-	// we asked about, defeating attackers who control DNS but not the
-	// issuer's discovery document.
-	provider, err := oidc.NewProvider(discoverCtx, issuerURL)
+	canonical, oidcVerifier, err := discoverVerifier(discoverCtx, issuerURL, audience, skipAudience)
 	if err != nil {
-		return nil, fmt.Errorf("jwksauth: discover %s: %w", issuerURL, err)
+		return nil, err
 	}
+	return &Verifier{
+		verifier:        oidcVerifier,
+		canonicalIssuer: canonical,
+		timeout:         cfg.verifyTimeout,
+	}, nil
+}
 
+// discoverVerifier runs OIDC discovery against issuerURL and returns the
+// provider's canonical issuer string together with a verifier configured for
+// the given audience. Both single- and multi-issuer constructors funnel
+// through here so the discovery contract — and the iss-pinning that
+// [oidc.NewProvider] enforces against the URL it was asked about — has a
+// single source of truth.
+func discoverVerifier(
+	ctx context.Context,
+	issuerURL, audience string,
+	skipAudience bool,
+) (string, *oidc.IDTokenVerifier, error) {
+	provider, err := oidc.NewProvider(ctx, issuerURL)
+	if err != nil {
+		return "", nil, fmt.Errorf("jwksauth: discover %s: %w", issuerURL, err)
+	}
 	var meta struct {
 		Issuer string `json:"issuer"`
 	}
 	if err := provider.Claims(&meta); err != nil {
-		return nil, fmt.Errorf("jwksauth: read provider metadata for %s: %w", issuerURL, err)
+		return "", nil, fmt.Errorf("jwksauth: read metadata for %s: %w", issuerURL, err)
 	}
-
-	return &Verifier{
-		verifier: provider.Verifier(&oidc.Config{
-			ClientID:          audience,
-			SkipClientIDCheck: skipAudience,
-		}),
-		canonicalIssuer: meta.Issuer,
-		timeout:         cfg.verifyTimeout,
-	}, nil
+	return meta.Issuer, provider.Verifier(&oidc.Config{
+		ClientID:          audience,
+		SkipClientIDCheck: skipAudience,
+	}), nil
 }
 
 // Issuer returns the canonical issuer string discovered at construction.
