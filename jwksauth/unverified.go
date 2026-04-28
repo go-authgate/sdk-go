@@ -8,9 +8,11 @@ import (
 	"strings"
 )
 
-// ErrMalformedJWT indicates the Authorization header value is not a JWT.
-// Returned by [UnverifiedIssuer] and from the multi-issuer routing path;
-// check with errors.Is.
+// ErrMalformedJWT indicates the Authorization header value cannot be parsed
+// as a JWT — wrong number of segments, undecodable base64 payload, invalid
+// JSON, or missing `iss` claim. Every error path in [UnverifiedIssuer]
+// wraps this sentinel so callers can detect "not a JWT" with a single
+// errors.Is check.
 var ErrMalformedJWT = errors.New("malformed JWT")
 
 // UnverifiedIssuer extracts the `iss` claim from a JWT payload WITHOUT
@@ -23,6 +25,8 @@ var ErrMalformedJWT = errors.New("malformed JWT")
 // pathological Authorization header (packed with dots) from triggering
 // large allocations on the base64-decode path before signature verification
 // has a chance to reject it.
+//
+// All errors wrap [ErrMalformedJWT].
 func UnverifiedIssuer(raw string) (string, error) {
 	// Cap=4 so a 4+ segment token fails the len==3 check below before any
 	// base64 work happens.
@@ -32,16 +36,16 @@ func UnverifiedIssuer(raw string) (string, error) {
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", fmt.Errorf("decode JWT payload: %w", err)
+		return "", fmt.Errorf("%w: decode payload: %w", ErrMalformedJWT, err)
 	}
 	var c struct {
 		Iss string `json:"iss"`
 	}
 	if err := json.Unmarshal(payload, &c); err != nil {
-		return "", fmt.Errorf("parse JWT payload: %w", err)
+		return "", fmt.Errorf("%w: parse payload: %w", ErrMalformedJWT, err)
 	}
 	if c.Iss == "" {
-		return "", errors.New("JWT missing iss claim")
+		return "", fmt.Errorf("%w: missing iss claim", ErrMalformedJWT)
 	}
 	return c.Iss, nil
 }

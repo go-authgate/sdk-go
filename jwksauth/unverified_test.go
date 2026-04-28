@@ -29,6 +29,8 @@ func TestUnverifiedIssuer_Happy(t *testing.T) {
 }
 
 func TestUnverifiedIssuer_Errors(t *testing.T) {
+	missingIssToken := makeJWT(t, `{"sub":"u1"}`)
+	nonJSONPayload := "abc." + base64.RawURLEncoding.EncodeToString([]byte("not json")) + ".ghi"
 	tests := []struct {
 		name string
 		raw  string
@@ -38,10 +40,8 @@ func TestUnverifiedIssuer_Errors(t *testing.T) {
 		{"two segments", "abc.def"},
 		{"too many segments", "a.b.c.d.e.f"},
 		{"bad base64 payload", "abc.@@@.ghi"},
-		{
-			"non-json payload",
-			"abc." + base64.RawURLEncoding.EncodeToString([]byte("not json")) + ".ghi",
-		},
+		{"non-json payload", nonJSONPayload},
+		{"missing iss claim", missingIssToken},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,18 +49,16 @@ func TestUnverifiedIssuer_Errors(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
+			// Public contract: every error path wraps ErrMalformedJWT so
+			// callers can detect "not a JWT" with one errors.Is check.
+			if !errors.Is(err, ErrMalformedJWT) {
+				t.Errorf("error %v does not wrap ErrMalformedJWT", err)
+			}
 		})
 	}
 }
 
-func TestUnverifiedIssuer_MalformedSentinel(t *testing.T) {
-	_, err := UnverifiedIssuer("only-one-segment")
-	if !errors.Is(err, ErrMalformedJWT) {
-		t.Errorf("error = %v, want ErrMalformedJWT", err)
-	}
-}
-
-func TestUnverifiedIssuer_MissingIss(t *testing.T) {
+func TestUnverifiedIssuer_MissingIssMessage(t *testing.T) {
 	tok := makeJWT(t, `{"sub":"u1"}`)
 	_, err := UnverifiedIssuer(tok)
 	if err == nil || !strings.Contains(err.Error(), "iss") {

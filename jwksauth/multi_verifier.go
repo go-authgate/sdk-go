@@ -34,9 +34,9 @@ var (
 // every issuer at construction time; on the hot path the dispatcher is a
 // single map lookup followed by the chosen verifier's signature check.
 //
-// A MultiVerifier is safe for concurrent use after construction. Issuer
-// tenant pinning is mutated only via [MultiVerifier.SetIssuerTenants],
-// which must be called before the verifier is shared with handlers.
+// A MultiVerifier is safe for concurrent use after construction.
+// [MultiVerifier.SetIssuerTenants] swaps the pinning configuration via an
+// atomic pointer, so it is also safe to call concurrently with Verify.
 type MultiVerifier struct {
 	verifiers map[string]*oidc.IDTokenVerifier
 
