@@ -19,6 +19,25 @@ import (
 	retry "github.com/appleboy/go-httpretry"
 )
 
+// OAuth 2.0 grant types (RFC 6749 / RFC 8628).
+const (
+	GrantTypeAuthorizationCode = "authorization_code"
+	GrantTypeClientCredentials = "client_credentials"
+	GrantTypeRefreshToken      = "refresh_token"
+	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+)
+
+// PKCE code-challenge methods (RFC 7636 §4.3).
+const PKCEMethodS256 = "S256"
+
+// OAuth 2.0 error codes used in error responses (RFC 6749 §5.2 / RFC 8628 §3.5).
+const (
+	ErrCodeAuthorizationPending = "authorization_pending"
+	ErrCodeSlowDown             = "slow_down"
+	ErrCodeExpiredToken         = "expired_token"
+	ErrCodeAccessDenied         = "access_denied"
+)
+
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).
 type Token struct {
 	AccessToken  string `json:"access_token"`
@@ -200,7 +219,7 @@ func (c *Client) RequestDeviceCode(ctx context.Context, scopes []string) (*Devic
 // ExchangeDeviceCode exchanges a device code for tokens (RFC 8628 §3.4).
 func (c *Client) ExchangeDeviceCode(ctx context.Context, deviceCode string) (*Token, error) {
 	data := url.Values{
-		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+		"grant_type":  {GrantTypeDeviceCode},
 		"device_code": {deviceCode},
 		"client_id":   {c.clientID},
 	}
@@ -214,7 +233,7 @@ func (c *Client) ExchangeAuthCode(
 	code, redirectURI, codeVerifier string,
 ) (*Token, error) {
 	data := url.Values{
-		"grant_type":   {"authorization_code"},
+		"grant_type":   {GrantTypeAuthorizationCode},
 		"code":         {code},
 		"redirect_uri": {redirectURI},
 		"client_id":    {c.clientID},
@@ -233,7 +252,7 @@ func (c *Client) ExchangeAuthCode(
 // ClientCredentials requests a token using client credentials (RFC 6749 §4.4).
 func (c *Client) ClientCredentials(ctx context.Context, scopes []string) (*Token, error) {
 	data := url.Values{
-		"grant_type":    {"client_credentials"},
+		"grant_type":    {GrantTypeClientCredentials},
 		"client_id":     {c.clientID},
 		"client_secret": {c.clientSecret},
 	}
@@ -247,7 +266,7 @@ func (c *Client) ClientCredentials(ctx context.Context, scopes []string) (*Token
 // RefreshToken exchanges a refresh token for new tokens (RFC 6749 §6).
 func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token, error) {
 	data := url.Values{
-		"grant_type":    {"refresh_token"},
+		"grant_type":    {GrantTypeRefreshToken},
 		"refresh_token": {refreshToken},
 		"client_id":     {c.clientID},
 	}
@@ -310,21 +329,9 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 		return nil, &Error{Code: "invalid_request", Description: "userinfo endpoint not configured"}
 	}
 
-	resp, err := c.httpClient.Get(ctx, c.endpoints.UserinfoURL,
-		retry.WithHeader("Authorization", "Bearer "+accessToken),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("oauth: userinfo request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, parseErrorResponse(resp)
-	}
-
 	var info UserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("oauth: decode userinfo response: %w", err)
+	if err := c.getJSON(ctx, c.endpoints.UserinfoURL, accessToken, &info); err != nil {
+		return nil, err
 	}
 	return &info, nil
 }
@@ -338,21 +345,9 @@ func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*Tok
 		}
 	}
 
-	resp, err := c.httpClient.Get(ctx, c.endpoints.TokenInfoURL,
-		retry.WithHeader("Authorization", "Bearer "+accessToken),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("oauth: tokeninfo request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, parseErrorResponse(resp)
-	}
-
 	var info TokenInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("oauth: decode tokeninfo response: %w", err)
+	if err := c.getJSON(ctx, c.endpoints.TokenInfoURL, accessToken, &info); err != nil {
+		return nil, err
 	}
 	return &info, nil
 }
@@ -380,6 +375,26 @@ func (c *Client) tokenRequest(ctx context.Context, data url.Values) (*Token, err
 func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values, result any) error {
 	resp, err := c.httpClient.Post(ctx, endpoint,
 		retry.WithBody("application/x-www-form-urlencoded", strings.NewReader(data.Encode())),
+	)
+	if err != nil {
+		return fmt.Errorf("oauth: request to %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return parseErrorResponse(resp)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
+	}
+	return nil
+}
+
+// getJSON sends a GET request with a Bearer access token and decodes the JSON response.
+func (c *Client) getJSON(ctx context.Context, endpoint, accessToken string, result any) error {
+	resp, err := c.httpClient.Get(ctx, endpoint,
+		retry.WithHeader("Authorization", "Bearer "+accessToken),
 	)
 	if err != nil {
 		return fmt.Errorf("oauth: request to %s: %w", endpoint, err)

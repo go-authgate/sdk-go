@@ -27,6 +27,17 @@ import (
 	"github.com/go-authgate/sdk-go/oauth"
 )
 
+// ErrReauthRequired is returned by TokenSource.Token when no valid token
+// exists in the store and refreshing is not possible. Callers should run
+// an interactive authentication flow when they see this error.
+var ErrReauthRequired = errors.New("authflow: re-authentication required")
+
+const (
+	htmlAuthSuccess = "<html><body><h1>Authentication successful</h1><p>You can close this window.</p></body></html>"
+	htmlAuthFailed  = "<html><body><h1>Authentication failed</h1><p>You can close this window.</p></body></html>"
+	htmlStateError  = "<html><body><h1>Authentication failed</h1><p>State mismatch. You can close this window.</p></body></html>"
+)
+
 // DeviceFlowHandler is called to display the device code to the user.
 type DeviceFlowHandler interface {
 	DisplayCode(auth *oauth.DeviceAuth) error
@@ -120,14 +131,14 @@ func pollDeviceCode(
 	defer timer.Stop()
 
 	for {
-		if time.Now().After(deadline) {
-			return nil, errors.New("authflow: device code expired")
-		}
-
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timer.C:
+		}
+
+		if time.Now().After(deadline) {
+			return nil, errors.New("authflow: device code expired")
 		}
 
 		token, err := client.ExchangeDeviceCode(ctx, auth.DeviceCode)
@@ -135,16 +146,16 @@ func pollDeviceCode(
 			var oauthErr *oauth.Error
 			if errors.As(err, &oauthErr) {
 				switch oauthErr.Code {
-				case "authorization_pending":
+				case oauth.ErrCodeAuthorizationPending:
 					timer.Reset(interval)
 					continue
-				case "slow_down":
+				case oauth.ErrCodeSlowDown:
 					interval += 5 * time.Second
 					timer.Reset(interval)
 					continue
-				case "expired_token":
+				case oauth.ErrCodeExpiredToken:
 					return nil, errors.New("authflow: device code expired")
-				case "access_denied":
+				case oauth.ErrCodeAccessDenied:
 					return nil, errors.New("authflow: access denied by user")
 				}
 			}
@@ -211,25 +222,24 @@ func RunAuthCodeFlow(
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 
+	// Buffer of 2 protects against blocked sends: callback handler and the
+	// Serve goroutine can both attempt to send before the main goroutine
+	// drains the channel.
 	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 
-	// Use sync.Once to ensure only the first callback is processed.
-	// Browser retries or user refreshes are safely ignored.
+	// sync.Once ensures only the first callback is processed; browser retries
+	// or user refreshes are safely ignored.
 	var once sync.Once
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
-			// Validate state parameter for CSRF protection
 			if r.URL.Query().Get("state") != state {
 				errCh <- &oauth.Error{
 					Code:        "invalid_state",
 					Description: "State parameter mismatch",
 				}
-				fmt.Fprint(
-					w,
-					"<html><body><h1>Authentication failed</h1><p>State mismatch. You can close this window.</p></body></html>",
-				)
+				fmt.Fprint(w, htmlStateError)
 				return
 			}
 
@@ -241,33 +251,29 @@ func RunAuthCodeFlow(
 					errMsg = "no code received"
 				}
 				errCh <- &oauth.Error{Code: errMsg, Description: errDesc}
-				fmt.Fprint(
-					w,
-					"<html><body><h1>Authentication failed</h1><p>You can close this window.</p></body></html>",
-				)
+				fmt.Fprint(w, htmlAuthFailed)
 				return
 			}
 			codeCh <- code
-			fmt.Fprint(
-				w,
-				"<html><body><h1>Authentication successful</h1><p>You can close this window.</p></body></html>",
-			)
+			fmt.Fprint(w, htmlAuthSuccess)
 		})
 	})
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		if srvErr := server.Serve(
-			listener,
-		); srvErr != nil &&
+	go func() {
+		if srvErr := server.Serve(listener); srvErr != nil &&
 			!errors.Is(srvErr, http.ErrServerClosed) {
-			errCh <- fmt.Errorf("authflow: callback server: %w", srvErr)
+			select {
+			case errCh <- fmt.Errorf("authflow: callback server: %w", srvErr):
+			default:
+			}
 		}
-	})
+	}()
 
-	// Build authorization URL
 	endpoints := client.Endpoints()
 	params := url.Values{
 		"response_type":         {"code"},
@@ -284,22 +290,18 @@ func RunAuthCodeFlow(
 		fmt.Printf("Open this URL in your browser:\n%s\n", authURL)
 	}
 
-	// Wait for callback or timeout
 	var code string
 	select {
 	case code = <-codeCh:
 	case err := <-errCh:
 		_ = server.Shutdown(ctx)
-		wg.Wait()
 		return nil, err
 	case <-ctx.Done():
 		_ = server.Shutdown(ctx)
-		wg.Wait()
 		return nil, ctx.Err()
 	}
 
 	_ = server.Shutdown(ctx)
-	wg.Wait()
 
 	// Exchange code for token
 	token, err := client.ExchangeAuthCode(ctx, code, redirectURI, pkce.Verifier)
@@ -320,11 +322,11 @@ func WithStore(store credstore.Store[credstore.Token]) TokenSourceOption {
 }
 
 // TokenSource provides automatic token refresh with optional persistent storage.
-// Concurrent callers share a single in-flight refresh request via singleflight.
+// Concurrent callers share a single in-flight refresh request via singleflight,
+// which serializes all store reads and writes within Token().
 type TokenSource struct {
 	client *oauth.Client
 	store  credstore.Store[credstore.Token]
-	mu     sync.RWMutex
 	group  singleflight.Group
 }
 
@@ -342,64 +344,51 @@ func NewTokenSource(client *oauth.Client, opts ...TokenSourceOption) *TokenSourc
 }
 
 // Token returns a valid token, refreshing from store or server as needed.
+// Returns ErrReauthRequired when no valid or refreshable token is available.
 // Concurrent callers share a single in-flight refresh request via singleflight.
 func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
-	// Fast path: read-lock to check for a valid cached token
-	if ts.store != nil {
-		ts.mu.RLock()
-		stored, err := ts.store.Load(ts.client.ClientID())
-		ts.mu.RUnlock()
-		if err == nil && stored.IsValid() {
-			return credstoreToOAuth(&stored), nil
-		}
-	}
-
-	// Slow path: use singleflight to coalesce concurrent refresh requests
 	v, err, _ := ts.group.Do("token", func() (any, error) {
-		// Re-check after acquiring the singleflight slot
-		if ts.store != nil {
-			ts.mu.RLock()
-			stored, err := ts.store.Load(ts.client.ClientID())
-			ts.mu.RUnlock()
-			if err == nil && stored.IsValid() {
-				return credstoreToOAuth(&stored), nil
-			}
-
-			if err != nil && !errors.Is(err, credstore.ErrNotFound) {
-				return nil, fmt.Errorf("authflow: load token: %w", err)
-			}
-
-			// Try refreshing if we have a refresh token
-			if err == nil && stored.RefreshToken != "" {
-				refreshed, refreshErr := ts.client.RefreshToken(ctx, stored.RefreshToken)
-				if refreshErr != nil {
-					return nil, fmt.Errorf("authflow: refresh token: %w", refreshErr)
-				}
-
-				ts.mu.Lock()
-				saveErr := ts.saveToken(refreshed)
-				ts.mu.Unlock()
-				if saveErr != nil {
-					return nil, fmt.Errorf("authflow: save refreshed token: %w", saveErr)
-				}
-				return refreshed, nil
-			}
-		}
-
-		return nil, errors.New("authflow: no valid token available, re-authentication required")
+		return ts.loadOrRefresh(ctx)
 	})
 	if err != nil {
 		return nil, err
 	}
-
 	return v.(*oauth.Token), nil
+}
+
+func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) {
+	if ts.store == nil {
+		return nil, ErrReauthRequired
+	}
+
+	stored, err := ts.store.Load(ts.client.ClientID())
+	if err != nil {
+		if errors.Is(err, credstore.ErrNotFound) {
+			return nil, ErrReauthRequired
+		}
+		return nil, fmt.Errorf("authflow: load token: %w", err)
+	}
+
+	if stored.IsValid() {
+		return credstoreToOAuth(&stored), nil
+	}
+
+	if stored.RefreshToken == "" {
+		return nil, ErrReauthRequired
+	}
+
+	refreshed, err := ts.client.RefreshToken(ctx, stored.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("authflow: refresh token: %w", err)
+	}
+	if err := ts.saveToken(refreshed); err != nil {
+		return nil, fmt.Errorf("authflow: save refreshed token: %w", err)
+	}
+	return refreshed, nil
 }
 
 // SaveToken persists a token to the store (if configured).
 func (ts *TokenSource) SaveToken(token *oauth.Token) error {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-
 	return ts.saveToken(token)
 }
 

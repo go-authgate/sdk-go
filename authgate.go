@@ -105,7 +105,6 @@ func New(
 		}
 	}
 
-	// 1. Discover endpoints
 	disco, err := discovery.NewClient(authgateURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("authgate: discovery client: %w", err)
@@ -115,44 +114,42 @@ func New(
 		return nil, nil, fmt.Errorf("authgate: fetch discovery: %w", err)
 	}
 
-	// 2. Create OAuth client
 	client, err := oauth.NewClient(clientID, meta.Endpoints())
 	if err != nil {
 		return nil, nil, fmt.Errorf("authgate: oauth client: %w", err)
 	}
 
-	// 3. Set up token store and source
 	store := credstore.DefaultTokenSecureStore(cfg.serviceName, cfg.storePath)
 	ts := authflow.NewTokenSource(client, authflow.WithStore(store))
 
-	// 4. Return cached/refreshed token if available
 	token, err := ts.Token(ctx)
 	if err == nil {
 		return client, token, nil
 	}
+	if !errors.Is(err, authflow.ErrReauthRequired) {
+		return nil, nil, fmt.Errorf("authgate: load token: %w", err)
+	}
 
-	// 5. No valid token — run the appropriate authentication flow
-	switch cfg.flowMode {
+	mode := cfg.flowMode
+	if mode == FlowModeAuto {
+		if authflow.CheckBrowserAvailability() {
+			mode = FlowModeBrowser
+		} else {
+			mode = FlowModeDevice
+		}
+	}
+	switch mode {
 	case FlowModeBrowser:
 		token, err = authflow.RunAuthCodeFlow(ctx, client, cfg.scopes,
 			authflow.WithLocalPort(cfg.localPort),
 		)
 	case FlowModeDevice:
 		token, err = authflow.RunDeviceFlow(ctx, client, cfg.scopes)
-	default: // FlowModeAuto
-		if authflow.CheckBrowserAvailability() {
-			token, err = authflow.RunAuthCodeFlow(ctx, client, cfg.scopes,
-				authflow.WithLocalPort(cfg.localPort),
-			)
-		} else {
-			token, err = authflow.RunDeviceFlow(ctx, client, cfg.scopes)
-		}
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("authgate: authenticate: %w", err)
 	}
 
-	// 6. Persist the new token
 	if saveErr := ts.SaveToken(token); saveErr != nil {
 		return nil, nil, fmt.Errorf("authgate: save token: %w", saveErr)
 	}
