@@ -24,8 +24,10 @@ func ExtractBearerToken(r *http.Request) string {
 
 // authState reports whether and how the Authorization header was supplied,
 // so [Middleware] can pick the right RFC 6750 §3 response: bare Bearer
-// challenge for "no credentials supplied", invalid_token for "credentials
-// were supplied for the Bearer scheme but turned out malformed".
+// challenge for "no credentials supplied", invalid_request (HTTP 400) for
+// "credentials were supplied for the Bearer scheme but the request itself
+// is malformed", and invalid_token (HTTP 401) for tokens that parse but
+// fail validation.
 type authState int
 
 const (
@@ -37,7 +39,7 @@ const (
 	// authMalformed — the Authorization header uses the Bearer scheme but
 	// the token portion is missing or shaped wrong (e.g. "Bearer", or
 	// "Bearer foo bar"). Credentials WERE supplied, just unparseable, so
-	// the challenge MUST advertise invalid_token / invalid_request.
+	// per RFC 6750 §3.1 the challenge advertises invalid_request.
 	authMalformed
 
 	// authPresent — a non-empty Bearer token was extracted.

@@ -101,10 +101,11 @@ func Middleware(
 			info, err := v.Verify(r.Context(), raw)
 			if err != nil {
 				cfg.logger.Printf("jwksauth: token verification failed: %v", err)
-				// Distinguish transient server-side failures (JWKS refresh
-				// network error, context deadline) from real token-validation
-				// failures so retry-aware clients back off instead of being
-				// pushed into a fresh authentication.
+				// Distinguish transient server-side failures we can reliably
+				// detect (context cancellation/deadline while go-oidc is
+				// fetching the JWKS or doing signature math) from real
+				// token-validation failures, so retry-aware clients back off
+				// instead of being pushed into a fresh authentication.
 				if isTransientVerifyError(r.Context(), err) {
 					WriteAuthError(w, ErrCodeServerError, "verifier unavailable")
 					return
