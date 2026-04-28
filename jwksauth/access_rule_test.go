@@ -75,6 +75,52 @@ func TestAccessRule_ProjectAllowlist(t *testing.T) {
 	}
 }
 
+// TestAccessRule_CanonicalDropsEmpty pins the fail-closed contract: a
+// stray empty/whitespace entry in any allowlist (typically from a trailing
+// comma in operator config) must NOT match a token whose claim is missing
+// or empty. Otherwise the allowlist silently degrades to "no enforcement
+// for callers without the claim".
+func TestAccessRule_CanonicalDropsEmpty(t *testing.T) {
+	rule := AccessRule{
+		Scopes:          []string{"  email  ", "", "profile"},
+		Tenants:         []string{"oa", "", "  ", "HwRd"},
+		ServiceAccounts: []string{"sync@oa", ""},
+		Projects:        []string{"p1", "  "},
+	}.canonical()
+
+	wantScopes := []string{"email", "profile"}
+	if !slicesEqual(rule.Scopes, wantScopes) {
+		t.Errorf("Scopes = %v, want %v", rule.Scopes, wantScopes)
+	}
+	wantTenants := []string{"oa", "hwrd"}
+	if !slicesEqual(rule.Tenants, wantTenants) {
+		t.Errorf("Tenants = %v, want %v", rule.Tenants, wantTenants)
+	}
+	if !slicesEqual(rule.ServiceAccounts, []string{"sync@oa"}) {
+		t.Errorf("ServiceAccounts = %v", rule.ServiceAccounts)
+	}
+	if !slicesEqual(rule.Projects, []string{"p1"}) {
+		t.Errorf("Projects = %v", rule.Projects)
+	}
+
+	// Token with missing claims must NOT pass the allowlists.
+	if _, ok := rule.checkClaims(newInfo("", "", "")); ok {
+		t.Error("missing claims passed allowlists — fail-closed broken")
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestAccessRule_CanonicalIsCopy(t *testing.T) {
 	original := AccessRule{Scopes: []string{"email"}, Tenants: []string{"OA"}}
 	canon := original.canonical()

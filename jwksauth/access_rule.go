@@ -40,17 +40,39 @@ type AccessRule struct {
 }
 
 // canonical returns a copy of the rule with allowlist values normalized
-// (Tenants lower-cased) and slices cloned so callers can safely mutate
-// theirs after registration.
+// and slices cloned so callers can safely mutate theirs after registration.
+//
+// Every entry is trimmed and empty results are dropped — otherwise a stray
+// "" (e.g. from a trailing comma in operator config) would let a token
+// whose claim is missing/empty pass the allowlist, silently breaking the
+// documented fail-closed semantics for missing claims.
+//
+// Tenants are additionally lower-cased so [AccessRule.Tenants] comparisons
+// are case-insensitive at the rule side.
 func (r AccessRule) canonical() AccessRule {
 	out := AccessRule{
-		Scopes:          slices.Clone(r.Scopes),
-		Tenants:         make([]string, 0, len(r.Tenants)),
-		ServiceAccounts: slices.Clone(r.ServiceAccounts),
-		Projects:        slices.Clone(r.Projects),
+		Scopes:          trimNonEmpty(r.Scopes, false),
+		Tenants:         trimNonEmpty(r.Tenants, true),
+		ServiceAccounts: trimNonEmpty(r.ServiceAccounts, false),
+		Projects:        trimNonEmpty(r.Projects, false),
 	}
-	for _, t := range r.Tenants {
-		out.Tenants = append(out.Tenants, strings.ToLower(t))
+	return out
+}
+
+func trimNonEmpty(in []string, lower bool) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if lower {
+			s = strings.ToLower(s)
+		}
+		out = append(out, s)
 	}
 	return out
 }
