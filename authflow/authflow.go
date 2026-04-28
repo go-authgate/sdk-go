@@ -298,20 +298,30 @@ func RunAuthCodeFlow(
 		fmt.Printf("Open this URL in your browser:\n%s\n", authURL)
 	}
 
+	// shutdown uses a detached context with a short timeout so that a canceled
+	// parent ctx does not cause Shutdown to return immediately and leave the
+	// listener bound (RFC 7230 §6.6 — graceful close with bounded wait).
+	shutdown := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+		}
+	}
+
 	var code string
 	select {
 	case code = <-codeCh:
 	case err := <-errCh:
-		_ = server.Shutdown(ctx)
+		shutdown()
 		return nil, err
 	case <-ctx.Done():
-		_ = server.Shutdown(ctx)
+		shutdown()
 		return nil, ctx.Err()
 	}
 
-	_ = server.Shutdown(ctx)
+	shutdown()
 
-	// Exchange code for token
 	token, err := client.ExchangeAuthCode(ctx, code, redirectURI, pkce.Verifier)
 	if err != nil {
 		return nil, fmt.Errorf("authflow: exchange auth code: %w", err)
@@ -330,11 +340,13 @@ func WithStore(store credstore.Store[credstore.Token]) TokenSourceOption {
 }
 
 // TokenSource provides automatic token refresh with optional persistent storage.
-// Concurrent callers share a single in-flight refresh request via singleflight,
-// which serializes all store reads and writes within Token().
+// Concurrent Token() callers share a single in-flight refresh via singleflight;
+// mu additionally serializes external SaveToken with the load+refresh+save
+// sequence so the store sees a consistent ordering of operations.
 type TokenSource struct {
 	client *oauth.Client
 	store  credstore.Store[credstore.Token]
+	mu     sync.Mutex
 	group  singleflight.Group
 }
 
@@ -356,6 +368,8 @@ func NewTokenSource(client *oauth.Client, opts ...TokenSourceOption) *TokenSourc
 // Concurrent callers share a single in-flight refresh request via singleflight.
 func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	v, err, _ := ts.group.Do("token", func() (any, error) {
+		ts.mu.Lock()
+		defer ts.mu.Unlock()
 		return ts.loadOrRefresh(ctx)
 	})
 	if err != nil {
@@ -364,6 +378,7 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	return v.(*oauth.Token), nil
 }
 
+// loadOrRefresh assumes ts.mu is held by the caller.
 func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) {
 	if ts.store == nil {
 		return nil, ErrReauthRequired
@@ -405,9 +420,12 @@ func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) 
 
 // SaveToken persists a token to the store (if configured).
 func (ts *TokenSource) SaveToken(token *oauth.Token) error {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	return ts.saveToken(token)
 }
 
+// saveToken assumes ts.mu is held by the caller.
 func (ts *TokenSource) saveToken(token *oauth.Token) error {
 	if ts.store == nil {
 		return nil
