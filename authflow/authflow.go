@@ -131,12 +131,20 @@ func pollDeviceCode(
 	defer timer.Stop()
 
 	for {
+		// Pre-check guards against an already-past deadline (e.g., a slow
+		// previous ExchangeDeviceCode call) so we don't wait another interval
+		// before returning expired.
+		if time.Now().After(deadline) {
+			return nil, errors.New("authflow: device code expired")
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
 
+		// Re-check after the timer fires to close the near-deadline race.
 		if time.Now().After(deadline) {
 			return nil, errors.New("authflow: device code expired")
 		}
@@ -379,6 +387,14 @@ func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) 
 
 	refreshed, err := ts.client.RefreshToken(ctx, stored.RefreshToken)
 	if err != nil {
+		// invalid_grant / invalid_token mean the refresh token is no longer
+		// usable (revoked or expired). Surface as ErrReauthRequired so callers
+		// fall back to interactive re-authentication.
+		var oauthErr *oauth.Error
+		if errors.As(err, &oauthErr) &&
+			(oauthErr.Code == oauth.ErrCodeInvalidGrant || oauthErr.Code == oauth.ErrCodeInvalidToken) {
+			return nil, fmt.Errorf("%w: %w", ErrReauthRequired, err)
+		}
 		return nil, fmt.Errorf("authflow: refresh token: %w", err)
 	}
 	if err := ts.saveToken(refreshed); err != nil {

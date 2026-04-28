@@ -145,6 +145,8 @@ func New(
 		)
 	case FlowModeDevice:
 		token, err = authflow.RunDeviceFlow(ctx, client, cfg.scopes)
+	default:
+		return nil, nil, fmt.Errorf("authgate: invalid flow mode: %d", mode)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("authgate: authenticate: %w", err)

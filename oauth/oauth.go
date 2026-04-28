@@ -36,6 +36,8 @@ const (
 	ErrCodeSlowDown             = "slow_down"
 	ErrCodeExpiredToken         = "expired_token"
 	ErrCodeAccessDenied         = "access_denied"
+	ErrCodeInvalidGrant         = "invalid_grant"
+	ErrCodeInvalidToken         = "invalid_token"
 )
 
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).

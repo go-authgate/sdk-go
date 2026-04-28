@@ -379,8 +379,84 @@ func TestTokenSource_NoToken(t *testing.T) {
 
 	ts := NewTokenSource(client, WithStore(store))
 	_, err = ts.Token(context.Background())
-	if err == nil {
-		t.Fatal("expected error when no token available")
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired, got: %v", err)
+	}
+}
+
+func TestTokenSource_NoStore(t *testing.T) {
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: "http://unused"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client) // no store configured
+	_, err = ts.Token(context.Background())
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired, got: %v", err)
+	}
+}
+
+func TestTokenSource_ExpiredNoRefreshToken(t *testing.T) {
+	store := newStubStore()
+	store.data["test-client"] = credstore.Token{
+		AccessToken: "expired-token",
+		// no refresh token
+		TokenType: "Bearer",
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+		ClientID:  "test-client",
+	}
+
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: "http://unused"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client, WithStore(store))
+	_, err = ts.Token(context.Background())
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired, got: %v", err)
+	}
+}
+
+func TestTokenSource_RefreshInvalidGrant(t *testing.T) {
+	store := newStubStore()
+	store.data["test-client"] = credstore.Token{
+		AccessToken:  "expired-token",
+		RefreshToken: "revoked-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+		ClientID:     "test-client",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":             "invalid_grant",
+			"error_description": "refresh token revoked",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: server.URL + "/token"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client, WithStore(store))
+	_, err = ts.Token(context.Background())
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired for invalid_grant refresh, got: %v", err)
 	}
 }
 
@@ -400,6 +476,9 @@ func TestTokenSource_LoadError(t *testing.T) {
 	_, err = ts.Token(context.Background())
 	if err == nil {
 		t.Fatal("expected error for store load failure")
+	}
+	if errors.Is(err, ErrReauthRequired) {
+		t.Errorf("transient load error should NOT match ErrReauthRequired, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "disk I/O error") {
 		t.Errorf("error should contain root cause, got: %v", err)
