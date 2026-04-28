@@ -1,0 +1,57 @@
+package jwksauth
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestWriteAuthError_InvalidToken(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteAuthError(rec, ErrCodeInvalidToken, "bad token")
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	got := rec.Header().Get("WWW-Authenticate")
+	wantSubs := []string{`Bearer error="invalid_token"`, `error_description="bad token"`}
+	for _, s := range wantSubs {
+		if !strings.Contains(got, s) {
+			t.Errorf("WWW-Authenticate %q missing %q", got, s)
+		}
+	}
+	if strings.Contains(got, "scope=") {
+		t.Errorf("WWW-Authenticate %q should not advertise scope on invalid_token", got)
+	}
+}
+
+func TestWriteAuthError_InsufficientScope(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteAuthError(rec, ErrCodeInsufficientScope, "required scope: email", "email")
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	got := rec.Header().Get("WWW-Authenticate")
+	wantSubs := []string{
+		`Bearer error="insufficient_scope"`,
+		`error_description="required scope: email"`,
+		`scope="email"`,
+	}
+	for _, s := range wantSubs {
+		if !strings.Contains(got, s) {
+			t.Errorf("WWW-Authenticate %q missing %q", got, s)
+		}
+	}
+}
+
+func TestWriteAuthError_MultipleScopes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteAuthError(rec, ErrCodeInsufficientScope, "missing scopes", "email", "profile")
+
+	got := rec.Header().Get("WWW-Authenticate")
+	if !strings.Contains(got, `scope="email profile"`) {
+		t.Errorf("WWW-Authenticate %q should join scopes with space", got)
+	}
+}
