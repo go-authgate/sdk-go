@@ -119,6 +119,13 @@ func newMultiVerifier(
 //
 //	iss1=tenantA,tenantB;iss2=tenantC
 //
+// The issuer keys on the left-hand side must exactly match the canonical
+// issuer strings returned by [MultiVerifier.Issuers]. These are the values
+// each provider reported during OIDC discovery, which may differ from the
+// URLs originally passed to NewMultiVerifier (for example, if the provider
+// normalizes a trailing slash). Call [MultiVerifier.Issuers] to log or
+// generate the expected keys.
+//
 // Every issuer registered with the verifier must appear exactly once in
 // raw, and a tenant must be owned by exactly one issuer. Both rules are
 // enforced strictly so a typo or operational mistake fails fast at
