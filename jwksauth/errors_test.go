@@ -46,6 +46,25 @@ func TestWriteAuthError_InsufficientScope(t *testing.T) {
 	}
 }
 
+func TestWriteAuthError_InvalidRequest(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteAuthError(rec, ErrCodeInvalidRequest, "malformed Authorization header")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	got := rec.Header().Get("WWW-Authenticate")
+	wantSubs := []string{
+		`Bearer error="invalid_request"`,
+		`error_description="malformed Authorization header"`,
+	}
+	for _, s := range wantSubs {
+		if !strings.Contains(got, s) {
+			t.Errorf("WWW-Authenticate %q missing %q", got, s)
+		}
+	}
+}
+
 func TestWriteAuthError_MultipleScopes(t *testing.T) {
 	rec := httptest.NewRecorder()
 	WriteAuthError(rec, ErrCodeInsufficientScope, "missing scopes", "email", "profile")

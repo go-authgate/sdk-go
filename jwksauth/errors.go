@@ -8,8 +8,15 @@ import (
 
 // RFC 6750 error codes accepted by [WriteAuthError].
 const (
-	// ErrCodeInvalidToken matches RFC 6750 §3.1 invalid_token. Triggers a
-	// 401 response.
+	// ErrCodeInvalidRequest matches RFC 6750 §3.1 invalid_request. The
+	// Bearer credential was supplied in some form but the request is
+	// malformed (e.g. "Bearer" with no token, or extra tokens after the
+	// bearer value). Triggers a 400 response.
+	ErrCodeInvalidRequest = "invalid_request"
+
+	// ErrCodeInvalidToken matches RFC 6750 §3.1 invalid_token. The token
+	// itself is invalid — bad signature, expired, wrong issuer/audience,
+	// or rejected by AccessRule. Triggers a 401 response.
 	ErrCodeInvalidToken = "invalid_token"
 
 	// ErrCodeInsufficientScope matches RFC 6750 §3.1 insufficient_scope.
@@ -33,8 +40,11 @@ const (
 // emit a bare `WWW-Authenticate: Bearer` instead of using this helper.
 func WriteAuthError(w http.ResponseWriter, code, desc string, scopes ...string) {
 	status := http.StatusUnauthorized
-	if code == ErrCodeInsufficientScope {
+	switch code {
+	case ErrCodeInsufficientScope:
 		status = http.StatusForbidden
+	case ErrCodeInvalidRequest:
+		status = http.StatusBadRequest
 	}
 	challenge := fmt.Sprintf(`Bearer error=%q, error_description=%q`, code, desc)
 	if len(scopes) > 0 {

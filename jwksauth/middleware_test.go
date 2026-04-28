@@ -78,8 +78,9 @@ func (f *fakeIssuer) jwks(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}})
 }
 
-// Sign issues a JWT with the given claims. ttl<=0 means already-expired;
-// audience="" omits the `aud` claim entirely (used to test SkipAudience).
+// Sign issues a JWT with the given claims. A negative ttl produces a
+// past-`exp` (deterministically expired); audience="" omits the `aud`
+// claim entirely (used to test SkipAudience).
 func (f *fakeIssuer) Sign(
 	t *testing.T,
 	audience string,
@@ -211,15 +212,16 @@ func TestMiddleware_AuthorizationHeaderHandling(t *testing.T) {
 		// RFC 6750 §3: no credentials supplied → bare Bearer, no error attr.
 		{"missing", "", http.StatusUnauthorized, "Bearer", ""},
 		{"basic-scheme", "Basic dXNlcjpwYXNz", http.StatusUnauthorized, "Bearer", ""},
-		// RFC 6750 §3: credentials supplied for Bearer but malformed →
-		// must surface error="invalid_token".
-		{"bearer-no-token", "Bearer", http.StatusUnauthorized, "", `error="invalid_token"`},
+		// RFC 6750 §3.1: credentials supplied for Bearer but the request
+		// itself is malformed → invalid_request (HTTP 400). invalid_token
+		// is reserved for tokens that parsed but failed validation.
+		{"bearer-no-token", "Bearer", http.StatusBadRequest, "", `error="invalid_request"`},
 		{
 			"bearer-trailing-junk",
 			"Bearer abc def",
-			http.StatusUnauthorized,
+			http.StatusBadRequest,
 			"",
-			`error="invalid_token"`,
+			`error="invalid_request"`,
 		},
 	}
 	for _, tc := range tests {

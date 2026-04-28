@@ -90,9 +90,11 @@ func Middleware(
 				return
 			case authMalformed:
 				// Credentials were supplied for the Bearer scheme but the
-				// header is unparseable — surface invalid_token so the
-				// client knows to fix its request, per RFC 6750 §3.1.
-				WriteAuthError(w, ErrCodeInvalidToken, "invalid token")
+				// header is unparseable — RFC 6750 §3.1 reserves
+				// invalid_request (HTTP 400) for malformed requests, vs.
+				// invalid_token (401) for tokens that parsed but failed
+				// validation.
+				WriteAuthError(w, ErrCodeInvalidRequest, "malformed Authorization header")
 				return
 			}
 			info, err := v.Verify(r.Context(), raw)
