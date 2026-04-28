@@ -159,9 +159,10 @@ func (v *MultiVerifier) Issuers() []string {
 }
 
 // IssuerTenants returns the configured cross-tenant allowlist keyed by
-// canonical issuer, or nil if [MultiVerifier.SetIssuerTenants] was not
-// called. The returned map and its slices may be modified by callers
-// (a defensive copy is made).
+// canonical issuer, or nil when enforcement is disabled — whether
+// [MultiVerifier.SetIssuerTenants] was never called or was last called
+// with an empty string. The returned map and its slices may be modified
+// by callers (a defensive copy is made).
 func (v *MultiVerifier) IssuerTenants() map[string][]string {
 	cur := v.issuerTenants.Load()
 	if cur == nil {
