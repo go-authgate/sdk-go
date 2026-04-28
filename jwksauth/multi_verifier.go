@@ -276,13 +276,13 @@ func buildVerifiers(
 		g.Go(func() error {
 			provider, err := oidc.NewProvider(gctx, issuer)
 			if err != nil {
-				return fmt.Errorf("discover %s: %w", issuer, err)
+				return fmt.Errorf("jwksauth: discover %s: %w", issuer, err)
 			}
 			var meta struct {
 				Issuer string `json:"issuer"`
 			}
 			if err := provider.Claims(&meta); err != nil {
-				return fmt.Errorf("read metadata for %s: %w", issuer, err)
+				return fmt.Errorf("jwksauth: read metadata for %s: %w", issuer, err)
 			}
 			results[i] = result{
 				canonical: meta.Issuer,
@@ -302,7 +302,7 @@ func buildVerifiers(
 	for _, r := range results {
 		if _, dup := out[r.canonical]; dup {
 			return nil, fmt.Errorf(
-				"duplicate issuer in configured issuers after discovery: %s",
+				"jwksauth: duplicate issuer in configured issuers after discovery: %s",
 				r.canonical,
 			)
 		}
