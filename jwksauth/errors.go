@@ -56,7 +56,11 @@ func WriteAuthError(w http.ResponseWriter, code, desc string, scopes ...string) 
 		status = http.StatusServiceUnavailable
 	}
 	challenge := fmt.Sprintf(`Bearer error=%q, error_description=%q`, code, desc)
-	if len(scopes) > 0 {
+	// RFC 6750 §3.1: the `scope` attribute is only defined for
+	// insufficient_scope. Silently drop any scopes a caller passes with a
+	// different code so the challenge stays spec-compliant even if the
+	// caller misuses the helper.
+	if code == ErrCodeInsufficientScope && len(scopes) > 0 {
 		challenge += fmt.Sprintf(`, scope=%q`, strings.Join(scopes, " "))
 	}
 	w.Header().Set("WWW-Authenticate", challenge)

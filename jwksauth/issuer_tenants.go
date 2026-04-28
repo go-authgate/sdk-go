@@ -23,8 +23,8 @@ import (
 //     points at the actual mistake rather than a confusing cross-issuer
 //     overlap message.
 //
-// Tenant codes are lower-cased so [AccessRule] (and the multi-verifier
-// dispatch) can compare case-insensitively.
+// Tenant codes are lower-cased so [AccessRule] and the cross-tenant
+// allowlist enforcement can compare tenants case-insensitively.
 //
 // Returns nil with no error when raw is empty — the caller can treat that
 // as "cross-tenant enforcement disabled".
