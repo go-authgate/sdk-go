@@ -21,7 +21,7 @@ var ErrMalformedJWT = errors.New("malformed JWT")
 // well under 2 KiB; these caps leave generous headroom.
 const (
 	maxRawJWTSize     = 8 << 10 // 8 KiB total token length
-	maxJWTPayloadSize = 6 << 10 // 6 KiB middle segment, pre-base64
+	maxJWTPayloadSize = 6 << 10 // 6 KiB encoded middle segment (checked before base64 decode)
 )
 
 // UnverifiedIssuer extracts the `iss` claim from a JWT payload WITHOUT
@@ -33,7 +33,9 @@ const (
 // To bound work on this unverified parse path, the parser rejects:
 //   - inputs over [maxRawJWTSize] bytes,
 //   - any input that does not have exactly three dot-separated segments,
-//   - payload segments over [maxJWTPayloadSize] bytes (pre-base64).
+//   - encoded payload segments over [maxJWTPayloadSize] bytes (checked
+//     before base64 decode, so we never allocate the decoded form for
+//     payloads that would have been rejected anyway).
 //
 // All errors wrap [ErrMalformedJWT] and are detectable with errors.Is.
 func UnverifiedIssuer(raw string) (string, error) {
