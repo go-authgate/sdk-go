@@ -9,14 +9,14 @@ This package complements [`middleware/`](../middleware/), which calls the
 issuer's tokeninfo or introspection endpoint per request. Pick the model
 that matches your latency/revocation trade-off:
 
-| Concern                          | `jwksauth` (offline)             | `middleware` (online)              |
-| -------------------------------- | -------------------------------- | ---------------------------------- |
-| Per-request network round-trips  | None (signature math only)       | One per request                    |
-| Verification latency             | Microseconds                     | 10–50 ms + auth-server tail        |
-| Revocation visibility            | After `exp` of the access token  | Instant                            |
-| Survives auth-server outage      | Yes (after first JWKS fetch)     | No                                 |
-| Works with opaque (non-JWT) toks | No — JWT only                    | Yes                                |
-| Edge / air-gapped deployments    | Suitable                         | Requires reachable auth server     |
+| Concern                            | `jwksauth` (offline)             | `middleware` (online)              |
+| ---------------------------------- | -------------------------------- | ---------------------------------- |
+| Per-request network round-trips    | None (signature math only)       | One per request                    |
+| Verification latency               | Microseconds                     | 10–50 ms + auth-server tail        |
+| Revocation visibility              | After `exp` of the access token  | Instant                            |
+| Survives auth-server outage        | Yes (after first JWKS fetch)     | No                                 |
+| Works with opaque (non-JWT) tokens | No — JWT only                    | Yes                                |
+| Edge / air-gapped deployments      | Suitable                         | Requires reachable auth server     |
 
 Common pattern: short access-token lifetimes (5–15 min) + offline JWKS for
 the hot path, online introspection for revocation-sensitive mutations.
