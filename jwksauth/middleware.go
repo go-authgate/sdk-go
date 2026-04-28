@@ -2,6 +2,7 @@ package jwksauth
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 )
@@ -100,6 +101,14 @@ func Middleware(
 			info, err := v.Verify(r.Context(), raw)
 			if err != nil {
 				cfg.logger.Printf("jwksauth: token verification failed: %v", err)
+				// Distinguish transient server-side failures (JWKS refresh
+				// network error, context deadline) from real token-validation
+				// failures so retry-aware clients back off instead of being
+				// pushed into a fresh authentication.
+				if isTransientVerifyError(r.Context(), err) {
+					WriteAuthError(w, ErrCodeServerError, "verifier unavailable")
+					return
+				}
 				WriteAuthError(w, ErrCodeInvalidToken, "invalid token")
 				return
 			}
@@ -129,4 +138,20 @@ func Middleware(
 			next.ServeHTTP(w, r.WithContext(withTokenInfo(r.Context(), info)))
 		})
 	}
+}
+
+// isTransientVerifyError reports whether err looks like a server-side
+// problem rather than a real token-validation failure. Per request, the
+// only transient failure modes the SDK can reliably detect from go-oidc
+// are context cancellation and deadline expiry while waiting on a JWKS
+// refresh; token-validation failures don't wrap those.
+//
+// The check on the request's own context narrows the call to "the request
+// is still alive" — without it, a Verify error after the client itself
+// disconnected would surface as transient even though the upstream is fine.
+func isTransientVerifyError(reqCtx context.Context, err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return reqCtx.Err() == nil
+	}
+	return false
 }

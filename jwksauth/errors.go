@@ -23,6 +23,13 @@ const (
 	// Triggers a 403 response and may include the required scopes in the
 	// WWW-Authenticate challenge.
 	ErrCodeInsufficientScope = "insufficient_scope"
+
+	// ErrCodeServerError signals an internal failure during validation
+	// (commonly a transient JWKS or context error) where the token may
+	// still be valid — clients should retry rather than re-authenticate.
+	// Triggers a 503 response, matching standard "service unavailable"
+	// semantics so retry-aware clients back off and try again.
+	ErrCodeServerError = "temporarily_unavailable"
 )
 
 // WriteAuthError writes an RFC 6750 §3.1 compliant Bearer challenge for the
@@ -45,6 +52,8 @@ func WriteAuthError(w http.ResponseWriter, code, desc string, scopes ...string) 
 		status = http.StatusForbidden
 	case ErrCodeInvalidRequest:
 		status = http.StatusBadRequest
+	case ErrCodeServerError:
+		status = http.StatusServiceUnavailable
 	}
 	challenge := fmt.Sprintf(`Bearer error=%q, error_description=%q`, code, desc)
 	if len(scopes) > 0 {

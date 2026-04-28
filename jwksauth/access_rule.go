@@ -14,9 +14,9 @@ import (
 //   - An empty slice means "this dimension is not checked".
 //   - A populated slice is fail-closed: the token's value must appear in
 //     the slice (a missing claim is treated as not-in-allowlist).
-//   - Tenants is matched case-insensitively. Provide values in lower-case;
-//     [Middleware] will canonicalize the rule on construction so callers
-//     don't have to remember.
+//   - Tenants is matched case-insensitively. Callers may supply values in
+//     any case; [Middleware] canonicalizes the rule on construction by
+//     lower-casing tenant allowlist entries.
 //   - ServiceAccounts and Projects are matched exactly (case-sensitive).
 //
 // Construct rules per-route, not globally — different endpoints typically

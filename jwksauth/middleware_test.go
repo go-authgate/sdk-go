@@ -464,6 +464,43 @@ func TestMultiVerifier_SetIssuerTenantsRace(t *testing.T) {
 	<-done
 }
 
+// stubVerifier is a TokenVerifier that always returns the configured err
+// — used to drive Middleware down the transient-vs-validation branch.
+type stubVerifier struct{ err error }
+
+func (s stubVerifier) Verify(_ context.Context, _ string) (*TokenInfo, error) {
+	return nil, s.err
+}
+
+func TestMiddleware_TransientVerifierError(t *testing.T) {
+	v := stubVerifier{err: context.DeadlineExceeded}
+	rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+		// Real-looking JWT shape so ExtractBearerToken treats it as present.
+		req.Header.Set("Authorization", "Bearer aaa.bbb.ccc")
+	})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+	want := `error="temporarily_unavailable"`
+	if got := rec.Header().Get("WWW-Authenticate"); !strings.Contains(got, want) {
+		t.Errorf("WWW-Authenticate %q missing %q", got, want)
+	}
+}
+
+func TestMiddleware_NonTransientVerifierError(t *testing.T) {
+	v := stubVerifier{err: errors.New("signature: invalid")}
+	rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer aaa.bbb.ccc")
+	})
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+	want := `error="invalid_token"`
+	if got := rec.Header().Get("WWW-Authenticate"); !strings.Contains(got, want) {
+		t.Errorf("WWW-Authenticate %q missing %q", got, want)
+	}
+}
+
 // runMiddleware wires up a Middleware around a 200-OK inner handler and
 // returns the recorded response. modify can mutate the request before send.
 func runMiddleware(

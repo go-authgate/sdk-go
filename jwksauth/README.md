@@ -115,12 +115,13 @@ configured logger (defaults to `log.Default()`; override with
 
 The middleware emits standards-compliant `WWW-Authenticate` challenges:
 
-| Situation                                  | Status | `WWW-Authenticate`                                                            |
-| ------------------------------------------ | ------ | ----------------------------------------------------------------------------- |
-| Missing Authorization (or non-Bearer scheme) | 401    | `Bearer`                                                                      |
-| Bearer header malformed (no token, junk)   | 400    | `Bearer error="invalid_request", error_description="..."`                     |
-| Token verification fails                   | 401    | `Bearer error="invalid_token", error_description="invalid token"`             |
-| Required scope missing                     | 403    | `Bearer error="insufficient_scope", error_description="...", scope="<scope>"` |
+| Situation                                       | Status | `WWW-Authenticate`                                                            |
+| ----------------------------------------------- | ------ | ----------------------------------------------------------------------------- |
+| Missing Authorization (or non-Bearer scheme)    | 401    | `Bearer`                                                                      |
+| Bearer header malformed (no token, junk)        | 400    | `Bearer error="invalid_request", error_description="..."`                     |
+| Token verification fails                        | 401    | `Bearer error="invalid_token", error_description="invalid token"`             |
+| Transient verifier failure (deadline, JWKS net) | 503    | `Bearer error="temporarily_unavailable", error_description="..."`             |
+| Required scope missing                          | 403    | `Bearer error="insufficient_scope", error_description="...", scope="<scope>"` |
 
 `ExtractBearerToken` and `WriteAuthError` are exported so applications can
 reuse them in custom handlers without duplicating the parser/writer.
