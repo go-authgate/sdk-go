@@ -80,10 +80,19 @@ func Middleware(
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			raw := ExtractBearerToken(r)
-			if raw == "" {
+			raw, state := parseBearerHeader(r)
+			switch state {
+			case authMissing:
+				// RFC 6750 §3: no credentials supplied (header missing or
+				// non-Bearer scheme) — challenge MUST NOT include error.
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			case authMalformed:
+				// Credentials were supplied for the Bearer scheme but the
+				// header is unparseable — surface invalid_token so the
+				// client knows to fix its request, per RFC 6750 §3.1.
+				WriteAuthError(w, ErrCodeInvalidToken, "invalid token")
 				return
 			}
 			info, err := v.Verify(r.Context(), raw)

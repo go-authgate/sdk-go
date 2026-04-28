@@ -178,18 +178,51 @@ func TestVerifier_RejectsExpired(t *testing.T) {
 	}
 }
 
-func TestMiddleware_NoToken(t *testing.T) {
+func TestMiddleware_AuthorizationHeaderHandling(t *testing.T) {
 	fi := newFakeIssuer(t)
 	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	rec := runMiddleware(t, v, AccessRule{}, nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want 401", rec.Code)
+	tests := []struct {
+		name           string
+		header         string // empty = no Authorization header at all
+		wantStatus     int
+		wantWWWAuth    string // exact match if non-empty
+		wantWWWAuthSub string // substring match if non-empty
+	}{
+		// RFC 6750 §3: no credentials supplied → bare Bearer, no error attr.
+		{"missing", "", http.StatusUnauthorized, "Bearer", ""},
+		{"basic-scheme", "Basic dXNlcjpwYXNz", http.StatusUnauthorized, "Bearer", ""},
+		// RFC 6750 §3: credentials supplied for Bearer but malformed →
+		// must surface error="invalid_token".
+		{"bearer-no-token", "Bearer", http.StatusUnauthorized, "", `error="invalid_token"`},
+		{
+			"bearer-trailing-junk",
+			"Bearer abc def",
+			http.StatusUnauthorized,
+			"",
+			`error="invalid_token"`,
+		},
 	}
-	if got := rec.Header().Get("WWW-Authenticate"); got != "Bearer" {
-		t.Errorf("WWW-Authenticate = %q, want bare 'Bearer'", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+				if tc.header != "" {
+					req.Header.Set("Authorization", tc.header)
+				}
+			})
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			got := rec.Header().Get("WWW-Authenticate")
+			if tc.wantWWWAuth != "" && got != tc.wantWWWAuth {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, tc.wantWWWAuth)
+			}
+			if tc.wantWWWAuthSub != "" && !strings.Contains(got, tc.wantWWWAuthSub) {
+				t.Errorf("WWW-Authenticate %q missing %q", got, tc.wantWWWAuthSub)
+			}
+		})
 	}
 }
 

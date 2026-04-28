@@ -294,7 +294,7 @@ func buildVerifiers(
 		}
 		if _, dup := out[r.canonical]; dup {
 			return nil, fmt.Errorf(
-				"duplicate issuer in TRUSTED_ISSUERS after discovery: %s",
+				"duplicate issuer in configured issuers after discovery: %s",
 				r.canonical,
 			)
 		}
