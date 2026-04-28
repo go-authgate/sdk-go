@@ -78,7 +78,8 @@ func (f *fakeIssuer) jwks(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}})
 }
 
-// Sign issues a JWT with the given claims. ttl<=0 means already-expired.
+// Sign issues a JWT with the given claims. ttl<=0 means already-expired;
+// audience="" omits the `aud` claim entirely (used to test SkipAudience).
 func (f *fakeIssuer) Sign(
 	t *testing.T,
 	audience string,
@@ -90,10 +91,12 @@ func (f *fakeIssuer) Sign(
 	std := map[string]any{
 		"iss": f.server.URL,
 		"sub": "sub-1",
-		"aud": audience,
 		"iat": now.Unix(),
 		"nbf": now.Add(-30 * time.Second).Unix(),
 		"exp": now.Add(ttl).Unix(),
+	}
+	if audience != "" {
+		std["aud"] = audience
 	}
 	maps.Copy(std, extra)
 	raw, err := jwt.Signed(f.signer).Claims(std).Serialize()
@@ -135,6 +138,19 @@ func TestNewVerifier_RejectsEmptyAudience(t *testing.T) {
 	_, err := NewVerifier(t.Context(), "https://example.com", "")
 	if err == nil {
 		t.Fatal("expected error for empty audience")
+	}
+}
+
+func TestVerifierSkipAudience_AcceptsTokenWithoutAud(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifierSkipAudience(t.Context(), fi.URL())
+	if err != nil {
+		t.Fatalf("NewVerifierSkipAudience: %v", err)
+	}
+	// Sign a token without an `aud` claim by passing an empty audience.
+	tok := fi.Sign(t, "", time.Minute, nil)
+	if _, err := v.Verify(context.Background(), tok); err != nil {
+		t.Fatalf("Verify rejected an aud-less token: %v", err)
 	}
 }
 
@@ -221,14 +237,27 @@ func TestMiddleware_TenantAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "swrd"})
-	rec := runMiddleware(t, v, AccessRule{Tenants: []string{"oa"}}, func(req *http.Request) {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	})
-	// Allowlist mismatch → invalid_token (401, generic) so the allowlist
-	// itself isn't probeable.
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want 401", rec.Code)
+	tests := []struct {
+		name     string
+		tenant   string
+		rule     []string
+		wantCode int
+	}{
+		// Reject branch (already covered): 401 invalid_token, generic body.
+		{"reject", "swrd", []string{"oa"}, http.StatusUnauthorized},
+		// Accept branch: case-folded match (rule "OA" matches token "oa").
+		{"accept_case_folded", "oa", []string{"OA"}, http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"tenant": tc.tenant})
+			rec := runMiddleware(t, v, AccessRule{Tenants: tc.rule}, func(req *http.Request) {
+				req.Header.Set("Authorization", "Bearer "+tok)
+			})
+			if rec.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+		})
 	}
 }
 
@@ -323,10 +352,15 @@ func TestMultiVerifier_CrossTenantDefense(t *testing.T) {
 		t.Fatalf("SetIssuerTenants: %v", err)
 	}
 
-	// Issuer A claims tenant 'swrd' (which belongs to B) → reject.
+	// Issuer A claims tenant 'swrd' (which belongs to B) → reject. The
+	// error must not echo back the configured allowlist for this issuer.
 	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "swrd"})
-	if _, err := mv.Verify(context.Background(), tok); err == nil {
+	_, rejErr := mv.Verify(context.Background(), tok)
+	if rejErr == nil {
 		t.Fatal("expected cross-tenant rejection")
+	}
+	if strings.Contains(rejErr.Error(), "[oa]") || strings.Contains(rejErr.Error(), "allowed=") {
+		t.Errorf("error leaks the allowlist: %v", rejErr)
 	}
 
 	// Same issuer, its own tenant → accept.
@@ -334,6 +368,48 @@ func TestMultiVerifier_CrossTenantDefense(t *testing.T) {
 	if _, err := mv.Verify(context.Background(), tok); err != nil {
 		t.Fatalf("legit token rejected: %v", err)
 	}
+}
+
+// TestMultiVerifier_SetIssuerTenantsRace exercises the documented contract
+// that SetIssuerTenants is safe to call concurrently with Verify (the swap
+// is atomic). Run with `go test -race ./jwksauth/`.
+func TestMultiVerifier_SetIssuerTenantsRace(t *testing.T) {
+	a := newFakeIssuer(t)
+	b := newFakeIssuer(t)
+	mv, err := NewMultiVerifier(t.Context(), []string{a.URL(), b.URL()}, "api://x")
+	if err != nil {
+		t.Fatalf("NewMultiVerifier: %v", err)
+	}
+	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "oa"})
+
+	stop := make(chan struct{})
+	done := make(chan struct{}, 2)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = mv.Verify(context.Background(), tok)
+			}
+		}
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		cfg := fmt.Sprintf("%s=oa;%s=swrd", a.URL(), b.URL())
+		for i := range 50 {
+			if i%2 == 0 {
+				_ = mv.SetIssuerTenants(cfg)
+			} else {
+				_ = mv.SetIssuerTenants("")
+			}
+		}
+	}()
+
+	<-done
+	close(stop)
+	<-done
 }
 
 // runMiddleware wires up a Middleware around a 200-OK inner handler and

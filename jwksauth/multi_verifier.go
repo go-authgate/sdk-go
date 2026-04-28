@@ -7,10 +7,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
+
+// Compile-time guard that *MultiVerifier satisfies [TokenVerifier].
+var _ TokenVerifier = (*MultiVerifier)(nil)
 
 var (
 	errAudienceRequiredMulti = errors.New(
@@ -18,6 +22,11 @@ var (
 	)
 	errIssuerListEmpty   = errors.New("jwksauth: at least one issuer is required")
 	errIssuerListTrimmed = errors.New("jwksauth: issuer list is empty after trimming")
+
+	// ErrUntrustedIssuer is returned by [MultiVerifier.Verify] when the token's
+	// `iss` claim does not match any configured issuer. Wrapped with %w so
+	// callers can detect it via errors.Is.
+	ErrUntrustedIssuer = errors.New("untrusted issuer")
 )
 
 // MultiVerifier dispatches verification to the right per-issuer verifier
@@ -32,20 +41,13 @@ type MultiVerifier struct {
 	verifiers map[string]*oidc.IDTokenVerifier
 
 	// issuerTenants pins each issuer to the lower-cased tenant codes it is
-	// permitted to sign for. nil = enforcement disabled.
-	issuerTenants map[string][]string
+	// permitted to sign for. A nil pointer means enforcement is disabled.
+	// Loaded atomically so SetIssuerTenants can be called after Verify
+	// goroutines are already running, without a data race.
+	issuerTenants atomic.Pointer[map[string][]string]
 
 	timeout time.Duration
 }
-
-// errUntrustedIssuer is the sentinel for tokens whose `iss` claim is not
-// in the configured set. Wrap-aware: middleware uses errors.Is to log and
-// respond with a generic invalid_token without leaking the issuer set.
-var errUntrustedIssuer = errors.New("untrusted issuer")
-
-// ErrUntrustedIssuer is returned by [MultiVerifier.Verify] when the token's
-// `iss` claim does not match any configured issuer.
-var ErrUntrustedIssuer = errUntrustedIssuer
 
 // NewMultiVerifier builds a multi-issuer verifier. Every issuer in issuers
 // must serve a valid OIDC discovery document; discovery happens in parallel
@@ -121,17 +123,18 @@ func newMultiVerifier(
 // enforced strictly so a typo or operational mistake fails fast at
 // configuration time rather than silently disabling the check.
 //
-// Pass an empty string (or never call this method) to disable cross-tenant
-// enforcement — appropriate for single-tenant deployments.
-//
-// Mutates the receiver; call once during startup before sharing the
-// verifier with HTTP handlers.
+// Pass an empty string to disable cross-tenant enforcement; safe to call
+// concurrently with [MultiVerifier.Verify] (the swap is atomic).
 func (v *MultiVerifier) SetIssuerTenants(raw string) error {
 	parsed, err := ParseIssuerTenants(raw, v.Issuers())
 	if err != nil {
 		return err
 	}
-	v.issuerTenants = parsed
+	if parsed == nil {
+		v.issuerTenants.Store(nil)
+		return nil
+	}
+	v.issuerTenants.Store(&parsed)
 	return nil
 }
 
@@ -152,18 +155,21 @@ func (v *MultiVerifier) Issuers() []string {
 // called. The returned map and its slices may be modified by callers
 // (a defensive copy is made).
 func (v *MultiVerifier) IssuerTenants() map[string][]string {
-	if v.issuerTenants == nil {
+	cur := v.issuerTenants.Load()
+	if cur == nil {
 		return nil
 	}
-	out := make(map[string][]string, len(v.issuerTenants))
-	for k, vs := range v.issuerTenants {
+	out := make(map[string][]string, len(*cur))
+	for k, vs := range *cur {
 		out[k] = slices.Clone(vs)
 	}
 	return out
 }
 
 // Verify routes raw to the matching per-issuer verifier and returns the
-// decoded [TokenInfo] on success.
+// decoded [TokenInfo] on success. The supplied context is wrapped with the
+// verify timeout configured via [WithVerifyTimeout]; pass r.Context() so
+// client cancellation propagates.
 //
 // The flow is:
 //  1. Parse the unverified payload to read `iss` (selection only).
@@ -172,6 +178,10 @@ func (v *MultiVerifier) IssuerTenants() map[string][]string {
 //     iss, aud, exp, nbf.
 //  4. If [MultiVerifier.SetIssuerTenants] was configured, enforce that
 //     this issuer is allowed to sign for the token's tenant.
+//
+// Errors are intentionally low-detail to limit information disclosure to
+// callers that bypass [Middleware]; full diagnostic context is available
+// through [MultiVerifier.IssuerTenants] and the canonical issuer list.
 func (v *MultiVerifier) Verify(ctx context.Context, raw string) (*TokenInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, v.timeout)
 	defer cancel()
@@ -182,37 +192,33 @@ func (v *MultiVerifier) Verify(ctx context.Context, raw string) (*TokenInfo, err
 	}
 	verifier, ok := v.verifiers[iss]
 	if !ok {
-		return nil, fmt.Errorf("%w: iss=%q", errUntrustedIssuer, iss)
+		return nil, fmt.Errorf("%w: iss=%q", ErrUntrustedIssuer, iss)
 	}
 	tok, err := verifier.Verify(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
-	var extra Claims
-	if err := tok.Claims(&extra); err != nil {
-		return nil, fmt.Errorf("decode JWT claims: %w", err)
+	info, err := newTokenInfo(tok)
+	if err != nil {
+		return nil, err
 	}
-	tenant := strings.ToLower(extra.Tenant)
 
-	if v.issuerTenants != nil {
-		// Use tok.Issuer (post-verification) rather than the unverified iss
-		// — Verify already proved them equal, but reading the verified value
-		// keeps the trust boundary self-evident.
-		allowed := v.issuerTenants[tok.Issuer]
-		if !slices.Contains(allowed, tenant) {
+	// Use tok.Issuer (post-verification) rather than the unverified iss —
+	// Verify already proved them equal, but reading the verified value
+	// keeps the trust boundary self-evident.
+	if cur := v.issuerTenants.Load(); cur != nil {
+		allowed := (*cur)[tok.Issuer]
+		if !slices.Contains(allowed, info.tenant) {
+			// Don't echo the allowlist back: callers that bypass Middleware
+			// would otherwise probe the configured tenants by feeding tokens.
 			return nil, fmt.Errorf(
-				"issuer not permitted for this tenant: iss=%q tenant=%q allowed=%v",
-				tok.Issuer, extra.Tenant, allowed,
+				"issuer not permitted for this tenant: tenant=%q",
+				info.Claims.Tenant,
 			)
 		}
 	}
 
-	return &TokenInfo{
-		IDToken: tok,
-		Claims:  extra,
-		Scopes:  strings.Fields(extra.Scope),
-		tenant:  tenant,
-	}, nil
+	return info, nil
 }
 
 // dedupIssuers trims and validates the input issuer list.
@@ -257,9 +263,7 @@ func buildVerifiers(
 
 	var wg sync.WaitGroup
 	for i, issuer := range issuers {
-		wg.Add(1)
-		go func(i int, issuer string) {
-			defer wg.Done()
+		wg.Go(func() {
 			provider, err := oidc.NewProvider(ctx, issuer)
 			if err != nil {
 				results[i] = result{err: fmt.Errorf("discover %s: %w", issuer, err)}
@@ -279,7 +283,7 @@ func buildVerifiers(
 					SkipClientIDCheck: skipAudience,
 				}),
 			}
-		}(i, issuer)
+		})
 	}
 	wg.Wait()
 

@@ -10,6 +10,9 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
+// Compile-time guard that *Verifier satisfies [TokenVerifier].
+var _ TokenVerifier = (*Verifier)(nil)
+
 var (
 	errAudienceRequired = errors.New(
 		"jwksauth: audience must be non-empty (use NewVerifierSkipAudience to opt out)",
@@ -138,14 +141,5 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*TokenInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	var extra Claims
-	if err := tok.Claims(&extra); err != nil {
-		return nil, fmt.Errorf("decode JWT claims: %w", err)
-	}
-	return &TokenInfo{
-		IDToken: tok,
-		Claims:  extra,
-		Scopes:  strings.Fields(extra.Scope),
-		tenant:  strings.ToLower(extra.Tenant),
-	}, nil
+	return newTokenInfo(tok)
 }

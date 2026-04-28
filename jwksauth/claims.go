@@ -1,7 +1,9 @@
 package jwksauth
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
@@ -52,4 +54,19 @@ func (t *TokenInfo) HasScope(scope string) bool {
 // comparisons. Use t.Claims.Tenant if you need the original case.
 func (t *TokenInfo) Tenant() string {
 	return t.tenant
+}
+
+// newTokenInfo decodes the AuthGate-specific Claims from a verified IDToken
+// and assembles the TokenInfo struct returned by both verifiers.
+func newTokenInfo(tok *oidc.IDToken) (*TokenInfo, error) {
+	var extra Claims
+	if err := tok.Claims(&extra); err != nil {
+		return nil, fmt.Errorf("decode JWT claims: %w", err)
+	}
+	return &TokenInfo{
+		IDToken: tok,
+		Claims:  extra,
+		Scopes:  strings.Fields(extra.Scope),
+		tenant:  strings.ToLower(extra.Tenant),
+	}, nil
 }

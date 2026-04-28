@@ -119,10 +119,3 @@ func Middleware(
 		})
 	}
 }
-
-// Compile-time assertion that the bundled verifiers satisfy [TokenVerifier].
-// Any change that breaks this also breaks Middleware compilation.
-var (
-	_ TokenVerifier = (*Verifier)(nil)
-	_ TokenVerifier = (*MultiVerifier)(nil)
-)

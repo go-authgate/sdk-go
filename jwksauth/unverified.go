@@ -8,15 +8,10 @@ import (
 	"strings"
 )
 
-// errMalformedJWT is the sentinel returned when the raw token does not have
-// three dot-separated segments. Exposed as [ErrMalformedJWT] for callers
-// that want to differentiate this case.
-var errMalformedJWT = errors.New("malformed JWT")
-
 // ErrMalformedJWT indicates the Authorization header value is not a JWT.
-// It is wrapped by errors returned from [UnverifiedIssuer] and from the
-// multi-issuer routing path; check with errors.Is.
-var ErrMalformedJWT = errMalformedJWT
+// Returned by [UnverifiedIssuer] and from the multi-issuer routing path;
+// check with errors.Is.
+var ErrMalformedJWT = errors.New("malformed JWT")
 
 // UnverifiedIssuer extracts the `iss` claim from a JWT payload WITHOUT
 // validating the signature. The returned value MUST only be used to choose
@@ -29,11 +24,11 @@ var ErrMalformedJWT = errMalformedJWT
 // large allocations on the base64-decode path before signature verification
 // has a chance to reject it.
 func UnverifiedIssuer(raw string) (string, error) {
-	// SplitN with cap=4 means at most four substrings. A malformed token with
-	// 4+ segments fails the len==3 check below before any base64 work.
+	// Cap=4 so a 4+ segment token fails the len==3 check below before any
+	// base64 work happens.
 	parts := strings.SplitN(raw, ".", 4)
 	if len(parts) != 3 {
-		return "", errMalformedJWT
+		return "", ErrMalformedJWT
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
