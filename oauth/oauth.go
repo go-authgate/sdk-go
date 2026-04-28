@@ -30,7 +30,8 @@ const (
 // PKCE code-challenge methods (RFC 7636 §4.3).
 const PKCEMethodS256 = "S256"
 
-// OAuth 2.0 error codes used in error responses (RFC 6749 §5.2 / RFC 8628 §3.5).
+// OAuth 2.0 error codes used in error responses
+// (RFC 6749 §5.2, RFC 6750 §3.1, RFC 8628 §3.5).
 const (
 	ErrCodeAuthorizationPending = "authorization_pending"
 	ErrCodeSlowDown             = "slow_down"

@@ -368,8 +368,6 @@ func NewTokenSource(client *oauth.Client, opts ...TokenSourceOption) *TokenSourc
 // Concurrent callers share a single in-flight refresh request via singleflight.
 func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	v, err, _ := ts.group.Do("token", func() (any, error) {
-		ts.mu.Lock()
-		defer ts.mu.Unlock()
 		return ts.loadOrRefresh(ctx)
 	})
 	if err != nil {
@@ -378,13 +376,17 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	return v.(*oauth.Token), nil
 }
 
-// loadOrRefresh assumes ts.mu is held by the caller.
+// loadOrRefresh acquires ts.mu only around store I/O so the network refresh
+// call does not block external SaveToken callers. singleflight guarantees at
+// most one loadOrRefresh runs at a time, so there is no concurrent refresh.
 func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) {
 	if ts.store == nil {
 		return nil, ErrReauthRequired
 	}
 
+	ts.mu.Lock()
 	stored, err := ts.store.Load(ts.client.ClientID())
+	ts.mu.Unlock()
 	if err != nil {
 		if errors.Is(err, credstore.ErrNotFound) {
 			return nil, ErrReauthRequired
@@ -412,6 +414,9 @@ func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) 
 		}
 		return nil, fmt.Errorf("authflow: refresh token: %w", err)
 	}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	if err := ts.saveToken(refreshed); err != nil {
 		return nil, fmt.Errorf("authflow: save refreshed token: %w", err)
 	}
