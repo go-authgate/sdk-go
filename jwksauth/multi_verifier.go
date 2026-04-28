@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/sync/errgroup"
 )
 
 // Compile-time guard that *MultiVerifier satisfies [TokenVerifier].
@@ -66,6 +66,7 @@ func NewMultiVerifier(
 	audience string,
 	opts ...Option,
 ) (*MultiVerifier, error) {
+	audience = strings.TrimSpace(audience)
 	if audience == "" {
 		return nil, errAudienceRequiredMulti
 	}
@@ -257,24 +258,24 @@ func buildVerifiers(
 	type result struct {
 		canonical string
 		verifier  *oidc.IDTokenVerifier
-		err       error
 	}
 	results := make([]result, len(issuers))
 
-	var wg sync.WaitGroup
+	// errgroup.WithContext cancels the shared ctx as soon as any goroutine
+	// returns an error, so a hung discovery for one issuer doesn't keep
+	// startup blocked once a different issuer has already failed.
+	g, gctx := errgroup.WithContext(ctx)
 	for i, issuer := range issuers {
-		wg.Go(func() {
-			provider, err := oidc.NewProvider(ctx, issuer)
+		g.Go(func() error {
+			provider, err := oidc.NewProvider(gctx, issuer)
 			if err != nil {
-				results[i] = result{err: fmt.Errorf("discover %s: %w", issuer, err)}
-				return
+				return fmt.Errorf("discover %s: %w", issuer, err)
 			}
 			var meta struct {
 				Issuer string `json:"issuer"`
 			}
 			if err := provider.Claims(&meta); err != nil {
-				results[i] = result{err: fmt.Errorf("read metadata for %s: %w", issuer, err)}
-				return
+				return fmt.Errorf("read metadata for %s: %w", issuer, err)
 			}
 			results[i] = result{
 				canonical: meta.Issuer,
@@ -283,15 +284,15 @@ func buildVerifiers(
 					SkipClientIDCheck: skipAudience,
 				}),
 			}
+			return nil
 		})
 	}
-	wg.Wait()
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
 
 	out := make(map[string]*oidc.IDTokenVerifier, len(issuers))
 	for _, r := range results {
-		if r.err != nil {
-			return nil, r.err
-		}
 		if _, dup := out[r.canonical]; dup {
 			return nil, fmt.Errorf(
 				"duplicate issuer in configured issuers after discovery: %s",

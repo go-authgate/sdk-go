@@ -135,9 +135,26 @@ func TestVerifier_HappyPath(t *testing.T) {
 }
 
 func TestNewVerifier_RejectsEmptyAudience(t *testing.T) {
-	_, err := NewVerifier(t.Context(), "https://example.com", "")
-	if err == nil {
-		t.Fatal("expected error for empty audience")
+	cases := []string{"", "   ", "\t\n"}
+	for _, aud := range cases {
+		t.Run(fmt.Sprintf("aud=%q", aud), func(t *testing.T) {
+			_, err := NewVerifier(t.Context(), "https://example.com", aud)
+			if err == nil {
+				t.Fatal("expected error for empty/whitespace audience")
+			}
+		})
+	}
+}
+
+func TestNewMultiVerifier_RejectsEmptyAudience(t *testing.T) {
+	cases := []string{"", "   "}
+	for _, aud := range cases {
+		t.Run(fmt.Sprintf("aud=%q", aud), func(t *testing.T) {
+			_, err := NewMultiVerifier(t.Context(), []string{"https://example.com"}, aud)
+			if err == nil {
+				t.Fatal("expected error for empty/whitespace audience")
+			}
+		})
 	}
 }
 

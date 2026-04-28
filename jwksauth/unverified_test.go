@@ -77,3 +77,33 @@ func TestUnverifiedIssuer_ManyDots(t *testing.T) {
 		t.Fatal("expected error for many-dot input")
 	}
 }
+
+// TestUnverifiedIssuer_OversizedRaw asserts the size cap rejects a JWT
+// large enough to force a meaningful payload allocation, defending the
+// unverified parse path against header-stuffing.
+func TestUnverifiedIssuer_OversizedRaw(t *testing.T) {
+	raw := strings.Repeat("A", maxRawJWTSize+1)
+	_, err := UnverifiedIssuer(raw)
+	if !errors.Is(err, ErrMalformedJWT) {
+		t.Fatalf("error = %v, want wrap of ErrMalformedJWT", err)
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error message should mention size: %v", err)
+	}
+}
+
+// TestUnverifiedIssuer_OversizedPayload asserts an inner segment over the
+// payload cap is rejected before base64 decoding runs.
+func TestUnverifiedIssuer_OversizedPayload(t *testing.T) {
+	// Build a 3-segment token where segment 2 exceeds maxJWTPayloadSize but
+	// the overall length stays under maxRawJWTSize.
+	bigPayload := strings.Repeat("A", maxJWTPayloadSize+1)
+	raw := "h." + bigPayload + ".s"
+	_, err := UnverifiedIssuer(raw)
+	if !errors.Is(err, ErrMalformedJWT) {
+		t.Fatalf("error = %v, want wrap of ErrMalformedJWT", err)
+	}
+	if !strings.Contains(err.Error(), "payload too large") {
+		t.Errorf("error message should mention payload size: %v", err)
+	}
+}

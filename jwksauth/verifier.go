@@ -55,6 +55,7 @@ func NewVerifier(
 	issuerURL, audience string,
 	opts ...Option,
 ) (*Verifier, error) {
+	audience = strings.TrimSpace(audience)
 	if audience == "" {
 		return nil, errAudienceRequired
 	}
