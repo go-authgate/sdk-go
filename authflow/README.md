@@ -63,16 +63,16 @@ if authflow.CheckBrowserAvailability() {
 
 ### RunDeviceFlow
 
-| Option                     | Description                              |
-| -------------------------- | ---------------------------------------- |
-| `WithOpenBrowser(bool)`    | Automatically open verification URI      |
-| `WithDeviceFlowHandler()`  | Custom handler for displaying user codes |
+| Option                    | Description                              |
+| ------------------------- | ---------------------------------------- |
+| `WithOpenBrowser(bool)`   | Automatically open verification URI      |
+| `WithDeviceFlowHandler()` | Custom handler for displaying user codes |
 
 ### TokenSource
 
-| Option           | Description                                   |
-| ---------------- | --------------------------------------------- |
-| `WithStore()`    | Set credstore for token persistence            |
+| Option        | Description                         |
+| ------------- | ----------------------------------- |
+| `WithStore()` | Set credstore for token persistence |
 
 ## Types
 
