@@ -2,9 +2,10 @@
 //
 // Use this package on the resource-server side of an AuthGate deployment to
 // validate access tokens locally — no per-request callback to the issuer.
-// The signing keys are fetched from the issuer's JWKS endpoint at startup,
-// cached in process, and refreshed automatically when an unknown key id
-// appears in a token header.
+// Construction performs OIDC discovery; the JWKS itself is fetched lazily
+// by go-oidc on the first verification (and again whenever a token header
+// carries a previously-unknown key id), then cached in process so
+// subsequent verifications are network-free.
 //
 // # When to choose offline vs. online validation
 //

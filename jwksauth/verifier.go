@@ -22,10 +22,12 @@ var (
 
 // Verifier validates AuthGate access tokens issued by a single OIDC issuer.
 //
-// Construction performs OIDC discovery (one HTTP round-trip plus the JWKS
-// fetch) and caches the keyset in process. Once built, [Verifier.Verify] is
-// network-free except when a previously-unknown key id appears in a token
-// header — at which point go-oidc transparently refetches the JWKS.
+// Construction performs OIDC discovery (one HTTP round-trip to the
+// well-known endpoint) and prepares a remote key set. The JWKS itself is
+// fetched lazily by go-oidc on the first [Verifier.Verify] call and cached
+// in process; subsequent verifications are network-free unless a token
+// header carries a previously-unknown key id, at which point go-oidc
+// transparently refetches the JWKS.
 //
 // A Verifier is safe for concurrent use by many goroutines.
 type Verifier struct {
