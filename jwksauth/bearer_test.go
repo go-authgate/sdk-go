@@ -19,7 +19,8 @@ func TestParseBearerHeader(t *testing.T) {
 		{"basic", "Basic dXNlcjpwYXNz", "", authMissing},
 		{"unknown scheme", "MyScheme abc", "", authMissing},
 		// Malformed: Bearer scheme present but token unparseable. RFC 6750
-		// §3.1 requires the challenge to advertise invalid_token.
+		// §3.1 reserves invalid_request for this case (the request is
+		// malformed); the middleware maps it to HTTP 400.
 		{"no token", "Bearer", "", authMalformed},
 		{"trailing junk", "Bearer abc def", "", authMalformed},
 		// Present: a usable token was extracted.
