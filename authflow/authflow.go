@@ -341,8 +341,8 @@ func WithStore(store credstore.Store[credstore.Token]) TokenSourceOption {
 
 // TokenSource provides automatic token refresh with optional persistent storage.
 // Concurrent Token() callers share a single in-flight refresh via singleflight;
-// mu additionally serializes store I/O, including external SaveToken calls,
-// without implying it is held across the entire load+refresh+save flow.
+// mu additionally serializes store I/O so external SaveToken writes that race
+// with an in-flight refresh are not silently overwritten — see loadOrRefresh.
 type TokenSource struct {
 	client *oauth.Client
 	store  credstore.Store[credstore.Token]
@@ -417,6 +417,16 @@ func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) 
 
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
+
+	// Re-check the store under the lock. While ts.mu was released for the
+	// network refresh, an external SaveToken caller may have written a newer
+	// token. If the store no longer matches the snapshot we refreshed from,
+	// trust the external write and return it instead of overwriting it.
+	current, currentErr := ts.store.Load(ts.client.ClientID())
+	if currentErr == nil && current.AccessToken != stored.AccessToken {
+		return credstoreToOAuth(&current), nil
+	}
+
 	if err := ts.saveToken(refreshed); err != nil {
 		return nil, fmt.Errorf("authflow: save refreshed token: %w", err)
 	}
