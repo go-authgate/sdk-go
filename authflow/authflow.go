@@ -45,6 +45,12 @@ const (
 	htmlStateError  = "<html><body><h1>Authentication failed</h1><p>State mismatch. You can close this window.</p></body></html>"
 )
 
+// refreshTimeout caps the singleflight token-refresh round-trip (including
+// the network call and any retries). Real refresh responses are well under
+// this limit; the cap prevents a hung or unresponsive server from making
+// the shared refresh goroutine outlive every caller indefinitely.
+const refreshTimeout = 30 * time.Second
+
 // DeviceFlowHandler is called to display the device code to the user.
 type DeviceFlowHandler interface {
 	DisplayCode(auth *oauth.DeviceAuth) error
@@ -398,10 +404,14 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	// Detach the ctx that singleflight passes into loadOrRefresh from the
 	// caller's cancellation. singleflight runs the function once with the
 	// first caller's ctx, so without this the first caller's timeout would
-	// abort the shared refresh for every concurrent waiter. Each caller
-	// still honors its own cancellation via the select below.
-	innerCtx := context.WithoutCancel(ctx)
+	// abort the shared refresh for every concurrent waiter. context.WithoutCancel
+	// also strips the caller's deadline, so wrap the inner ctx with a bounded
+	// internal timeout — otherwise a hung server could let the refresh run
+	// forever after every caller has returned. Each caller still honors its
+	// own cancellation via the select below.
 	ch := ts.group.DoChan("token", func() (any, error) {
+		innerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+		defer cancel()
 		return ts.loadOrRefresh(innerCtx)
 	})
 	select {
