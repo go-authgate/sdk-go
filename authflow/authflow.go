@@ -27,9 +27,16 @@ import (
 	"github.com/go-authgate/sdk-go/oauth"
 )
 
-// ErrReauthRequired is returned by TokenSource.Token when no valid token
-// exists in the store and refreshing is not possible. Callers should run
-// an interactive authentication flow when they see this error.
+// ErrReauthRequired is returned by TokenSource.Token when interactive
+// re-authentication is required. This covers all cases where the
+// TokenSource cannot produce a token without user interaction:
+//   - no store is configured;
+//   - the store has no token for this client;
+//   - the stored token is expired and has no refresh token;
+//   - the refresh token has been revoked or has expired.
+//
+// Callers should fall back to an interactive authentication flow
+// when they see this error.
 var ErrReauthRequired = errors.New("authflow: re-authentication required")
 
 const (

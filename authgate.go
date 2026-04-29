@@ -127,7 +127,7 @@ func New(
 		return client, token, nil
 	}
 	if !errors.Is(err, authflow.ErrReauthRequired) {
-		return nil, nil, fmt.Errorf("authgate: load token: %w", err)
+		return nil, nil, fmt.Errorf("authgate: get token: %w", err)
 	}
 
 	mode := cfg.flowMode
