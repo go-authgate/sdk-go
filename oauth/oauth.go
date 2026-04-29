@@ -21,24 +21,34 @@ import (
 
 // OAuth 2.0 grant types (RFC 6749 / RFC 8628).
 const (
+	// GrantTypeAuthorizationCode is the Authorization Code grant (RFC 6749 §4.1).
 	GrantTypeAuthorizationCode = "authorization_code"
+	// GrantTypeClientCredentials is the Client Credentials grant (RFC 6749 §4.4).
 	GrantTypeClientCredentials = "client_credentials"
-	GrantTypeRefreshToken      = "refresh_token"
-	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+	// GrantTypeRefreshToken exchanges a refresh token for a new access token (RFC 6749 §6).
+	GrantTypeRefreshToken = "refresh_token"
+	// GrantTypeDeviceCode is the Device Authorization grant (RFC 8628 §3.4).
+	GrantTypeDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"
 )
 
-// PKCE code-challenge methods (RFC 7636 §4.3).
+// PKCEMethodS256 is the SHA-256 PKCE code-challenge method (RFC 7636 §4.3).
 const PKCEMethodS256 = "S256"
 
 // OAuth 2.0 error codes used in error responses
 // (RFC 6749 §5.2, RFC 6750 §3.1, RFC 8628 §3.5).
 const (
+	// ErrCodeAuthorizationPending signals the user has not yet completed device authorization (RFC 8628 §3.5).
 	ErrCodeAuthorizationPending = "authorization_pending"
-	ErrCodeSlowDown             = "slow_down"
-	ErrCodeExpiredToken         = "expired_token"
-	ErrCodeAccessDenied         = "access_denied"
-	ErrCodeInvalidGrant         = "invalid_grant"
-	ErrCodeInvalidToken         = "invalid_token"
+	// ErrCodeSlowDown asks the client to increase its device-code polling interval (RFC 8628 §3.5).
+	ErrCodeSlowDown = "slow_down"
+	// ErrCodeExpiredToken indicates the device_code has expired before authorization completed (RFC 8628 §3.5).
+	ErrCodeExpiredToken = "expired_token"
+	// ErrCodeAccessDenied signals the user denied the authorization request (RFC 6749 §4.1.2.1).
+	ErrCodeAccessDenied = "access_denied"
+	// ErrCodeInvalidGrant indicates the grant (auth code, refresh token, etc.) is invalid, expired, or revoked (RFC 6749 §5.2).
+	ErrCodeInvalidGrant = "invalid_grant"
+	// ErrCodeInvalidToken indicates the access token is invalid, expired, or revoked (RFC 6750 §3.1).
+	ErrCodeInvalidToken = "invalid_token"
 )
 
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).
