@@ -390,6 +390,30 @@ func (c *Client) tokenRequest(ctx context.Context, data url.Values) (*Token, err
 	return &tok, nil
 }
 
+// readCappedBody reads up to maxResponseBytes from r. It reads one extra byte
+// so callers can detect overflow: if the returned length exceeds
+// maxResponseBytes, the body was larger than the cap and the caller should
+// treat it as oversized rather than truncated.
+func readCappedBody(r io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+}
+
+// decodeJSONBody reads up to maxResponseBytes+1 from resp.Body, returns a
+// distinct error if the body is oversized, otherwise unmarshals into result.
+func decodeJSONBody(resp *http.Response, endpoint string, result any) error {
+	body, err := readCappedBody(resp.Body)
+	if err != nil {
+		return fmt.Errorf("oauth: read response from %s: %w", endpoint, err)
+	}
+	if int64(len(body)) > maxResponseBytes {
+		return fmt.Errorf("oauth: response from %s exceeds %d bytes", endpoint, maxResponseBytes)
+	}
+	if err := json.Unmarshal(body, result); err != nil {
+		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
+	}
+	return nil
+}
+
 // postForm sends a POST request with form-encoded body and decodes the JSON response.
 func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values, result any) error {
 	resp, err := c.httpClient.Post(ctx, endpoint,
@@ -404,11 +428,7 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 		return parseErrorResponse(resp)
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
-		Decode(result); err != nil {
-		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
-	}
-	return nil
+	return decodeJSONBody(resp, endpoint, result)
 }
 
 // getJSON sends a GET request with a Bearer access token and decodes the JSON response.
@@ -425,20 +445,23 @@ func (c *Client) getJSON(ctx context.Context, endpoint, accessToken string, resu
 		return parseErrorResponse(resp)
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
-		Decode(result); err != nil {
-		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
-	}
-	return nil
+	return decodeJSONBody(resp, endpoint, result)
 }
 
 // parseErrorResponse reads an OAuth error response body.
 func parseErrorResponse(resp *http.Response) error {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	body, err := readCappedBody(resp.Body)
 	if err != nil {
 		return &Error{
 			Code:        "server_error",
 			Description: "failed to read error response",
+			StatusCode:  resp.StatusCode,
+		}
+	}
+	if int64(len(body)) > maxResponseBytes {
+		return &Error{
+			Code:        "server_error",
+			Description: fmt.Sprintf("error response exceeds %d bytes", maxResponseBytes),
 			StatusCode:  resp.StatusCode,
 		}
 	}
