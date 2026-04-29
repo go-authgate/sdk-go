@@ -138,9 +138,13 @@ func New(
 		return client, token, nil
 	}
 
-	// 6. No valid token — run the appropriate authentication flow
+	// 6. No valid token — run the appropriate authentication flow.
+	// Treat any non-Device value as auto-detect: explicit Browser forces
+	// the auth-code flow, while Auto (and any unknown value) probes for a
+	// usable browser before falling back to the device flow. This preserves
+	// the prior switch's default-case behavior for unrecognized FlowModes.
 	useBrowser := cfg.flowMode == FlowModeBrowser ||
-		(cfg.flowMode == FlowModeAuto && authflow.CheckBrowserAvailability())
+		(cfg.flowMode != FlowModeDevice && authflow.CheckBrowserAvailability())
 	if useBrowser {
 		token, err = authflow.RunAuthCodeFlow(ctx, client, cfg.scopes,
 			authflow.WithLocalPort(cfg.localPort),

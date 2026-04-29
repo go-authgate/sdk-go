@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -243,11 +244,13 @@ func TestRunAuthCodeFlow_DuplicateCallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first callback: %v", err)
 	}
-	body := make([]byte, 1024)
-	n, _ := resp.Body.Read(body)
+	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(body[:n]), "Authentication successful") {
-		t.Errorf("first response should contain success message, got: %s", string(body[:n]))
+	if err != nil {
+		t.Fatalf("read first response body: %v", err)
+	}
+	if !strings.Contains(string(body), "Authentication successful") {
+		t.Errorf("first response should contain success message, got: %s", string(body))
 	}
 
 	// Second callback — should get "Already processed"
@@ -255,11 +258,13 @@ func TestRunAuthCodeFlow_DuplicateCallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second callback: %v", err)
 	}
-	body = make([]byte, 1024)
-	n, _ = resp.Body.Read(body)
+	body, err = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(body[:n]), "Already processed") {
-		t.Errorf("second response should contain 'Already processed', got: %s", string(body[:n]))
+	if err != nil {
+		t.Fatalf("read second response body: %v", err)
+	}
+	if !strings.Contains(string(body), "Already processed") {
+		t.Errorf("second response should contain 'Already processed', got: %s", string(body))
 	}
 
 	// Verify only the first code was sent
