@@ -361,6 +361,8 @@ func TestTokenSource_LoadValid(t *testing.T) {
 		AccessToken:  "cached-token",
 		RefreshToken: "cached-refresh",
 		TokenType:    "Bearer",
+		Scope:        "read write",
+		IDToken:      "cached-id-token",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 		ClientID:     "test-client",
 	}
@@ -385,6 +387,15 @@ func TestTokenSource_LoadValid(t *testing.T) {
 	}
 	if token.AccessToken != "cached-token" {
 		t.Errorf("AccessToken = %q, want %q", token.AccessToken, "cached-token")
+	}
+	if token.RefreshToken != "cached-refresh" {
+		t.Errorf("RefreshToken = %q, want %q", token.RefreshToken, "cached-refresh")
+	}
+	if token.Scope != "read write" {
+		t.Errorf("Scope = %q, want %q", token.Scope, "read write")
+	}
+	if token.IDToken != "cached-id-token" {
+		t.Errorf("IDToken = %q, want %q", token.IDToken, "cached-id-token")
 	}
 }
 
@@ -532,6 +543,8 @@ func TestTokenSource_SaveToken(t *testing.T) {
 		AccessToken:  "saved-token",
 		RefreshToken: "saved-refresh",
 		TokenType:    "Bearer",
+		Scope:        "openid profile email",
+		IDToken:      "saved-id-token",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 	})
 	if saveErr != nil {
@@ -544,6 +557,15 @@ func TestTokenSource_SaveToken(t *testing.T) {
 	}
 	if saved.AccessToken != "saved-token" {
 		t.Errorf("AccessToken = %q, want %q", saved.AccessToken, "saved-token")
+	}
+	if saved.RefreshToken != "saved-refresh" {
+		t.Errorf("RefreshToken = %q, want %q", saved.RefreshToken, "saved-refresh")
+	}
+	if saved.Scope != "openid profile email" {
+		t.Errorf("Scope = %q, want %q", saved.Scope, "openid profile email")
+	}
+	if saved.IDToken != "saved-id-token" {
+		t.Errorf("IDToken = %q, want %q", saved.IDToken, "saved-id-token")
 	}
 }
 

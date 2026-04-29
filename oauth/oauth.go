@@ -27,8 +27,9 @@ const maxResponseBytes = 1 << 20 // 1 MB
 var errResponseTooLarge = fmt.Errorf("oauth: response body exceeds %d bytes", maxResponseBytes)
 
 // limitedBody returns an io.Reader that reads up to maxResponseBytes+1 from r.
-// Reading one extra byte lets us distinguish "exactly at limit" (valid) from
-// "exceeded limit" (N reaches 0 only when the body is strictly larger).
+// Reading one extra byte lets us distinguish a body of exactly maxResponseBytes
+// (valid, leaving N == 1) from one that exceeds the cap (reading at least
+// maxResponseBytes+1 bytes, leaving N == 0).
 func limitedBody(r io.Reader) *io.LimitedReader {
 	return &io.LimitedReader{R: r, N: maxResponseBytes + 1}
 }
