@@ -18,6 +18,9 @@ import (
 
 type contextKey struct{}
 
+// clientSubjectPrefix is the prefix used by AuthGate to identify client (M2M) subjects.
+const clientSubjectPrefix = "client:"
+
 func newTokenNotActiveErr() *oauth.Error {
 	return &oauth.Error{Code: "invalid_token", Description: "Token is not active"}
 }
@@ -276,7 +279,7 @@ func validateViaIntrospection(
 	}
 
 	subjectType := "user"
-	if strings.HasPrefix(result.Sub, "client:") {
+	if strings.HasPrefix(result.Sub, clientSubjectPrefix) {
 		subjectType = "client"
 	}
 

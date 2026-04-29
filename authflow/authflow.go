@@ -244,11 +244,13 @@ func RunAuthCodeFlow(
 	errCh := make(chan error, 2)
 
 	// sync.Once ensures only the first callback is processed; browser retries
-	// or user refreshes are safely ignored.
+	// or user refreshes receive a simple acknowledgement.
 	var once sync.Once
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		handled := false
 		once.Do(func() {
+			handled = true
 			if r.URL.Query().Get("state") != state {
 				errCh <- &oauth.Error{
 					Code:        "invalid_state",
@@ -272,6 +274,12 @@ func RunAuthCodeFlow(
 			codeCh <- code
 			fmt.Fprint(w, htmlAuthSuccess)
 		})
+		if !handled {
+			fmt.Fprint(
+				w,
+				"<html><body><p>Already processed. You can close this window.</p></body></html>",
+			)
+		}
 	})
 
 	server := &http.Server{
@@ -466,6 +474,8 @@ func credstoreToOAuth(t *credstore.Token) *oauth.Token {
 		AccessToken:  t.AccessToken,
 		RefreshToken: t.RefreshToken,
 		TokenType:    t.TokenType,
+		Scope:        t.Scope,
+		IDToken:      t.IDToken,
 		ExpiresAt:    t.ExpiresAt,
 	}
 }
@@ -475,6 +485,8 @@ func oauthToCredstore(t *oauth.Token, clientID string) credstore.Token {
 		AccessToken:  t.AccessToken,
 		RefreshToken: t.RefreshToken,
 		TokenType:    t.TokenType,
+		Scope:        t.Scope,
+		IDToken:      t.IDToken,
 		ExpiresAt:    t.ExpiresAt,
 		ClientID:     clientID,
 	}

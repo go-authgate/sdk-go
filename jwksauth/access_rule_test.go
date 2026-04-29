@@ -9,22 +9,7 @@ func newInfo(tenant, sa, project string) *TokenInfo {
 			ServiceAccount: sa,
 			Project:        project,
 		},
-		tenant: lower(tenant),
 	}
-}
-
-// lower is the same case-fold the verifier applies; duplicated here so the
-// test does not reach into the verifier construction path.
-func lower(s string) string {
-	out := make([]byte, len(s))
-	for i := range len(s) {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
 }
 
 func TestAccessRule_EmptyAllowsAll(t *testing.T) {

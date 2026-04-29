@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -22,6 +23,23 @@ import (
 const (
 	wellKnownPath   = "/.well-known/openid-configuration"
 	defaultCacheTTL = 1 * time.Hour
+
+	// maxResponseBytes caps the discovery response read size.
+	maxResponseBytes = 1 << 20 // 1 MB
+
+	// AuthGate-specific endpoint paths derived from the issuer URL
+	// when not advertised in the discovery document.
+	deviceCodePath    = "/oauth/device/code"
+	introspectionPath = "/oauth/introspect"
+	tokenInfoPath     = "/oauth/tokeninfo"
+)
+
+// errResponseTooLarge is returned when a discovery response exceeds
+// maxResponseBytes. Exposed as a package-level sentinel so callers can
+// detect the condition via errors.Is.
+var errResponseTooLarge = fmt.Errorf(
+	"discovery: response body exceeds %d bytes",
+	maxResponseBytes,
 )
 
 // Metadata represents a subset of the OIDC Provider Metadata (RFC 8414)
@@ -71,7 +89,7 @@ func (m *Metadata) Endpoints() oauth.Endpoints {
 
 	// TokenInfoURL is always derived from issuer (not part of standard OIDC discovery)
 	if m.Issuer != "" {
-		ep.TokenInfoURL = strings.TrimRight(m.Issuer, "/") + "/oauth/tokeninfo"
+		ep.TokenInfoURL = strings.TrimRight(m.Issuer, "/") + tokenInfoPath
 	}
 
 	return ep
@@ -109,22 +127,26 @@ func WithCacheTTL(ttl time.Duration) Option {
 }
 
 // NewClient creates a new OIDC discovery client.
+// A default retry HTTP client is created only when no client is provided via WithHTTPClient.
 func NewClient(issuerURL string, opts ...Option) (*Client, error) {
-	httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
-	if err != nil {
-		return nil, fmt.Errorf("discovery: create http client: %w", err)
-	}
-
 	c := &Client{
-		issuerURL:  strings.TrimRight(issuerURL, "/"),
-		httpClient: httpClient,
-		cacheTTL:   defaultCacheTTL,
+		issuerURL: strings.TrimRight(issuerURL, "/"),
+		cacheTTL:  defaultCacheTTL,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(c)
 		}
 	}
+
+	if c.httpClient == nil {
+		httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
+		if err != nil {
+			return nil, fmt.Errorf("discovery: create http client: %w", err)
+		}
+		c.httpClient = httpClient
+	}
+
 	return c, nil
 }
 
@@ -169,8 +191,15 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	}
 
 	var meta Metadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	lr := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
+	if err := json.NewDecoder(lr).Decode(&meta); err != nil {
+		if lr.N == 0 {
+			return nil, fmt.Errorf("%w: %w", errResponseTooLarge, err)
+		}
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
+	}
+	if lr.N == 0 {
+		return nil, errResponseTooLarge
 	}
 
 	// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
@@ -186,12 +215,12 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	// AuthGate uses a fixed device authorization path. Derive it from issuer
 	// when not explicitly advertised in the discovery response.
 	if meta.DeviceAuthorizationEndpoint == "" {
-		meta.DeviceAuthorizationEndpoint = issuer + "/oauth/device/code"
+		meta.DeviceAuthorizationEndpoint = issuer + deviceCodePath
 	}
 
 	// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
 	if meta.IntrospectionEndpoint == "" {
-		meta.IntrospectionEndpoint = issuer + "/oauth/introspect"
+		meta.IntrospectionEndpoint = issuer + introspectionPath
 	}
 
 	c.cached = &meta

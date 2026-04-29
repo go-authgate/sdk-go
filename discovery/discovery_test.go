@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -253,6 +254,35 @@ func TestFetch_ServerError(t *testing.T) {
 	_, err = client.Fetch(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 404 response")
+	}
+}
+
+func TestFetch_ResponseBodyTooLarge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Valid JSON whose total length exceeds maxResponseBytes so the
+		// LimitedReader is exhausted while decoding.
+		w.Write([]byte(`{"issuer":"`))
+		padding := make([]byte, maxResponseBytes+1)
+		for i := range padding {
+			padding[i] = 'A'
+		}
+		w.Write(padding)
+		w.Write([]byte(`"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL, WithCacheTTL(0))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("expected error for oversized discovery response")
+	}
+	if !errors.Is(err, errResponseTooLarge) {
+		t.Errorf("expected errResponseTooLarge, got: %v", err)
 	}
 }
 
