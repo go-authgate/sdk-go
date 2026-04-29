@@ -395,8 +395,14 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 		}
 	}
 
+	// Detach the ctx that singleflight passes into loadOrRefresh from the
+	// caller's cancellation. singleflight runs the function once with the
+	// first caller's ctx, so without this the first caller's timeout would
+	// abort the shared refresh for every concurrent waiter. Each caller
+	// still honors its own cancellation via the select below.
+	innerCtx := context.WithoutCancel(ctx)
 	ch := ts.group.DoChan("token", func() (any, error) {
-		return ts.loadOrRefresh(ctx)
+		return ts.loadOrRefresh(innerCtx)
 	})
 	select {
 	case res := <-ch:
