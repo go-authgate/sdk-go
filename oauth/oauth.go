@@ -38,13 +38,16 @@ func limitedBody(r io.Reader) *io.LimitedReader {
 // This must be called even on a successful decode: a body that is exactly
 // maxResponseBytes+1 of valid JSON decodes cleanly while still violating the
 // cap, so relying solely on decode errors would let oversized payloads pass.
-// The decode error, when present, is preserved as additional context.
-func checkLimitExceeded(lr *io.LimitedReader, decodeErr error) error {
+// op identifies the calling operation (e.g., "userinfo") so the resulting
+// error carries enough context for debugging. When decodeErr is non-nil it is
+// wrapped via %w alongside errResponseTooLarge so callers can use errors.Is/As
+// against either sentinel.
+func checkLimitExceeded(lr *io.LimitedReader, op string, decodeErr error) error {
 	if lr.N == 0 {
 		if decodeErr != nil {
-			return fmt.Errorf("%w: %v", errResponseTooLarge, decodeErr)
+			return fmt.Errorf("%w (%s): %w", errResponseTooLarge, op, decodeErr)
 		}
-		return errResponseTooLarge
+		return fmt.Errorf("%w (%s)", errResponseTooLarge, op)
 	}
 	return decodeErr
 }
@@ -366,7 +369,7 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 	if decodeErr != nil {
 		decodeErr = fmt.Errorf("oauth: decode userinfo response: %w", decodeErr)
 	}
-	if err := checkLimitExceeded(lr, decodeErr); err != nil {
+	if err := checkLimitExceeded(lr, "userinfo", decodeErr); err != nil {
 		return nil, err
 	}
 	return &info, nil
@@ -399,7 +402,7 @@ func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*Tok
 	if decodeErr != nil {
 		decodeErr = fmt.Errorf("oauth: decode tokeninfo response: %w", decodeErr)
 	}
-	if err := checkLimitExceeded(lr, decodeErr); err != nil {
+	if err := checkLimitExceeded(lr, "tokeninfo", decodeErr); err != nil {
 		return nil, err
 	}
 	return &info, nil
@@ -443,7 +446,7 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 	if decodeErr != nil {
 		decodeErr = fmt.Errorf("oauth: decode response from %s: %w", endpoint, decodeErr)
 	}
-	return checkLimitExceeded(lr, decodeErr)
+	return checkLimitExceeded(lr, endpoint, decodeErr)
 }
 
 // parseErrorResponse reads an OAuth error response body.
