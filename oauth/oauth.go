@@ -33,12 +33,18 @@ func limitedBody(r io.Reader) *io.LimitedReader {
 	return &io.LimitedReader{R: r, N: maxResponseBytes + 1}
 }
 
-// checkLimitExceeded returns errResponseTooLarge wrapped with the original
-// decode error context if the LimitedReader was fully exhausted (N == 0),
-// meaning the response body exceeded maxResponseBytes.
+// checkLimitExceeded returns errResponseTooLarge when the LimitedReader was
+// fully exhausted (N == 0), meaning the response body exceeded maxResponseBytes.
+// This must be called even on a successful decode: a body that is exactly
+// maxResponseBytes+1 of valid JSON decodes cleanly while still violating the
+// cap, so relying solely on decode errors would let oversized payloads pass.
+// The decode error, when present, is preserved as additional context.
 func checkLimitExceeded(lr *io.LimitedReader, decodeErr error) error {
-	if decodeErr != nil && lr.N == 0 {
-		return fmt.Errorf("%w: %v", errResponseTooLarge, decodeErr)
+	if lr.N == 0 {
+		if decodeErr != nil {
+			return fmt.Errorf("%w: %v", errResponseTooLarge, decodeErr)
+		}
+		return errResponseTooLarge
 	}
 	return decodeErr
 }
@@ -356,8 +362,12 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 
 	var info UserInfo
 	lr := limitedBody(resp.Body)
-	if err := json.NewDecoder(lr).Decode(&info); err != nil {
-		return nil, checkLimitExceeded(lr, fmt.Errorf("oauth: decode userinfo response: %w", err))
+	decodeErr := json.NewDecoder(lr).Decode(&info)
+	if decodeErr != nil {
+		decodeErr = fmt.Errorf("oauth: decode userinfo response: %w", decodeErr)
+	}
+	if err := checkLimitExceeded(lr, decodeErr); err != nil {
+		return nil, err
 	}
 	return &info, nil
 }
@@ -385,8 +395,12 @@ func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*Tok
 
 	var info TokenInfo
 	lr := limitedBody(resp.Body)
-	if err := json.NewDecoder(lr).Decode(&info); err != nil {
-		return nil, checkLimitExceeded(lr, fmt.Errorf("oauth: decode tokeninfo response: %w", err))
+	decodeErr := json.NewDecoder(lr).Decode(&info)
+	if decodeErr != nil {
+		decodeErr = fmt.Errorf("oauth: decode tokeninfo response: %w", decodeErr)
+	}
+	if err := checkLimitExceeded(lr, decodeErr); err != nil {
+		return nil, err
 	}
 	return &info, nil
 }
@@ -425,13 +439,11 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 	}
 
 	lr := limitedBody(resp.Body)
-	if err := json.NewDecoder(lr).Decode(result); err != nil {
-		return checkLimitExceeded(
-			lr,
-			fmt.Errorf("oauth: decode response from %s: %w", endpoint, err),
-		)
+	decodeErr := json.NewDecoder(lr).Decode(result)
+	if decodeErr != nil {
+		decodeErr = fmt.Errorf("oauth: decode response from %s: %w", endpoint, decodeErr)
 	}
-	return nil
+	return checkLimitExceeded(lr, decodeErr)
 }
 
 // parseErrorResponse reads an OAuth error response body.

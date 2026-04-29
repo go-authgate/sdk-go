@@ -562,3 +562,37 @@ func TestErrorResponseBodyTooLarge(t *testing.T) {
 		t.Errorf("unexpected description: %s", oauthErr.Description)
 	}
 }
+
+// TestResponseBodyExactlyAtBoundary covers the case where the body is valid
+// JSON whose total length equals maxResponseBytes+1: Decode succeeds and
+// consumes the LimitedReader's sentinel byte (lr.N == 0). Without a post-decode
+// size check the response would be silently accepted despite exceeding the cap.
+func TestResponseBodyExactlyAtBoundary(t *testing.T) {
+	const prefix = `{"access_token":"`
+	const suffix = `"}`
+	padLen := maxResponseBytes + 1 - len(prefix) - len(suffix)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(prefix))
+		padding := make([]byte, padLen)
+		for i := range padding {
+			padding[i] = 'A'
+		}
+		w.Write(padding)
+		w.Write([]byte(suffix))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test", Endpoints{TokenURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.ClientCredentials(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for response at boundary")
+	}
+	if !errors.Is(err, errResponseTooLarge) {
+		t.Errorf("expected errResponseTooLarge, got: %v", err)
+	}
+}
