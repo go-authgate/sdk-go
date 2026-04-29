@@ -428,10 +428,12 @@ func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) 
 	// Re-check the store under the lock. While ts.mu was released for the
 	// network refresh, an external SaveToken caller may have written a newer
 	// token. If any of the fields we care about have changed (access token,
-	// refresh token, or expiry), trust the external write and return it
-	// instead of overwriting it.
+	// refresh token, or expiry) AND the new token is itself valid, trust
+	// the external write and return it instead of overwriting it. If the
+	// concurrent write produced an invalid/expired token, fall through and
+	// save our freshly refreshed result.
 	current, currentErr := ts.store.Load(ts.client.ClientID())
-	if currentErr == nil &&
+	if currentErr == nil && current.IsValid() &&
 		(current.AccessToken != stored.AccessToken ||
 			current.RefreshToken != stored.RefreshToken ||
 			!current.ExpiresAt.Equal(stored.ExpiresAt)) {

@@ -51,6 +51,12 @@ const (
 	ErrCodeInvalidToken = "invalid_token"
 )
 
+// maxResponseBytes caps the JSON response body read from any OAuth endpoint.
+// Real token / userinfo / introspection responses are well under this limit;
+// the cap prevents a misconfigured or hostile endpoint from forcing the client
+// to allocate unbounded memory while decoding.
+const maxResponseBytes = 1 << 20 // 1 MiB
+
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).
 type Token struct {
 	AccessToken  string `json:"access_token"`
@@ -398,7 +404,8 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 		return parseErrorResponse(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
+		Decode(result); err != nil {
 		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
 	}
 	return nil
@@ -418,7 +425,8 @@ func (c *Client) getJSON(ctx context.Context, endpoint, accessToken string, resu
 		return parseErrorResponse(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).
+		Decode(result); err != nil {
 		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
 	}
 	return nil
@@ -426,7 +434,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint, accessToken string, resu
 
 // parseErrorResponse reads an OAuth error response body.
 func parseErrorResponse(resp *http.Response) error {
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return &Error{
 			Code:        "server_error",
