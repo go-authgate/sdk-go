@@ -17,11 +17,7 @@ import (
 var _ TokenVerifier = (*MultiVerifier)(nil)
 
 var (
-	errAudienceRequiredMulti = errors.New(
-		"jwksauth: audience must be non-empty (use NewMultiVerifierSkipAudience to opt out)",
-	)
-	errIssuerListEmpty   = errors.New("jwksauth: at least one issuer is required")
-	errIssuerListTrimmed = errors.New("jwksauth: issuer list is empty after trimming")
+	errNoIssuers = errors.New("jwksauth: at least one issuer is required")
 
 	// ErrUntrustedIssuer is returned by [MultiVerifier.Verify] when the token's
 	// `iss` claim does not match any configured issuer. Wrapped with %w so
@@ -68,7 +64,10 @@ func NewMultiVerifier(
 ) (*MultiVerifier, error) {
 	audience = strings.TrimSpace(audience)
 	if audience == "" {
-		return nil, errAudienceRequiredMulti
+		return nil, fmt.Errorf(
+			"%w (use NewMultiVerifierSkipAudience to opt out)",
+			errAudienceRequired,
+		)
 	}
 	return newMultiVerifier(ctx, issuers, audience, false, opts...)
 }
@@ -217,7 +216,7 @@ func (v *MultiVerifier) Verify(ctx context.Context, raw string) (*TokenInfo, err
 	// keeps the trust boundary self-evident.
 	if cur := v.issuerTenants.Load(); cur != nil {
 		allowed := (*cur)[tok.Issuer]
-		if !slices.Contains(allowed, info.tenant) {
+		if !slices.Contains(allowed, info.Tenant()) {
 			// Don't echo the allowlist back: callers that bypass Middleware
 			// would otherwise probe the configured tenants by feeding tokens.
 			return nil, fmt.Errorf(
@@ -232,9 +231,6 @@ func (v *MultiVerifier) Verify(ctx context.Context, raw string) (*TokenInfo, err
 
 // dedupIssuers trims and validates the input issuer list.
 func dedupIssuers(in []string) ([]string, error) {
-	if len(in) == 0 {
-		return nil, errIssuerListEmpty
-	}
 	out := make([]string, 0, len(in))
 	seen := make(map[string]struct{}, len(in))
 	for _, raw := range in {
@@ -249,7 +245,7 @@ func dedupIssuers(in []string) ([]string, error) {
 		out = append(out, iss)
 	}
 	if len(out) == 0 {
-		return nil, errIssuerListTrimmed
+		return nil, errNoIssuers
 	}
 	return out, nil
 }
@@ -275,23 +271,11 @@ func buildVerifiers(
 	g, gctx := errgroup.WithContext(ctx)
 	for i, issuer := range issuers {
 		g.Go(func() error {
-			provider, err := oidc.NewProvider(gctx, issuer)
+			canonical, oidcVerifier, err := discoverVerifier(gctx, issuer, audience, skipAudience)
 			if err != nil {
-				return fmt.Errorf("jwksauth: discover %s: %w", issuer, err)
+				return err
 			}
-			var meta struct {
-				Issuer string `json:"issuer"`
-			}
-			if err := provider.Claims(&meta); err != nil {
-				return fmt.Errorf("jwksauth: read metadata for %s: %w", issuer, err)
-			}
-			results[i] = result{
-				canonical: meta.Issuer,
-				verifier: provider.Verifier(&oidc.Config{
-					ClientID:          audience,
-					SkipClientIDCheck: skipAudience,
-				}),
-			}
+			results[i] = result{canonical: canonical, verifier: oidcVerifier}
 			return nil
 		})
 	}

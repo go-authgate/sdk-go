@@ -63,13 +63,7 @@ func ParseIssuerTenants(raw string, known []string) (map[string][]string, error)
 			)
 		}
 
-		var tenants []string
-		for t := range strings.SplitSeq(tenantsRaw, ",") {
-			t = strings.ToLower(strings.TrimSpace(t))
-			if t != "" {
-				tenants = append(tenants, t)
-			}
-		}
+		tenants := trimNonEmpty(strings.Split(tenantsRaw, ","), true)
 		if len(tenants) == 0 {
 			return nil, fmt.Errorf("issuer %q in ISSUER_TENANTS has no tenants", iss)
 		}
