@@ -34,6 +34,14 @@ const (
 	tokenInfoPath     = "/oauth/tokeninfo"
 )
 
+// errResponseTooLarge is returned when a discovery response exceeds
+// maxResponseBytes. Exposed as a package-level sentinel so callers can
+// detect the condition via errors.Is.
+var errResponseTooLarge = fmt.Errorf(
+	"discovery: response body exceeds %d bytes",
+	maxResponseBytes,
+)
+
 // Metadata represents a subset of the OIDC Provider Metadata (RFC 8414)
 // tailored to the fields used by the AuthGate SDK.
 type Metadata struct {
@@ -186,12 +194,12 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	lr := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
 	if err := json.NewDecoder(lr).Decode(&meta); err != nil {
 		if lr.N == 0 {
-			return nil, fmt.Errorf("discovery: response body exceeds %d bytes", maxResponseBytes)
+			return nil, fmt.Errorf("%w: %w", errResponseTooLarge, err)
 		}
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
 	}
 	if lr.N == 0 {
-		return nil, fmt.Errorf("discovery: response body exceeds %d bytes", maxResponseBytes)
+		return nil, errResponseTooLarge
 	}
 
 	// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
