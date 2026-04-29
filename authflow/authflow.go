@@ -215,11 +215,13 @@ func RunAuthCodeFlow(
 	errCh := make(chan error, 1)
 
 	// Use sync.Once to ensure only the first callback is processed.
-	// Browser retries or user refreshes are safely ignored.
+	// Browser retries or user refreshes receive a simple acknowledgement.
 	var once sync.Once
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		handled := false
 		once.Do(func() {
+			handled = true
 			// Validate state parameter for CSRF protection
 			if r.URL.Query().Get("state") != state {
 				errCh <- &oauth.Error{
@@ -253,6 +255,12 @@ func RunAuthCodeFlow(
 				"<html><body><h1>Authentication successful</h1><p>You can close this window.</p></body></html>",
 			)
 		})
+		if !handled {
+			fmt.Fprint(
+				w,
+				"<html><body><p>Already processed. You can close this window.</p></body></html>",
+			)
+		}
 	})
 
 	server := &http.Server{Handler: mux}
@@ -415,6 +423,8 @@ func credstoreToOAuth(t *credstore.Token) *oauth.Token {
 		AccessToken:  t.AccessToken,
 		RefreshToken: t.RefreshToken,
 		TokenType:    t.TokenType,
+		Scope:        t.Scope,
+		IDToken:      t.IDToken,
 		ExpiresAt:    t.ExpiresAt,
 	}
 }
@@ -424,6 +434,8 @@ func oauthToCredstore(t *oauth.Token, clientID string) credstore.Token {
 		AccessToken:  t.AccessToken,
 		RefreshToken: t.RefreshToken,
 		TokenType:    t.TokenType,
+		Scope:        t.Scope,
+		IDToken:      t.IDToken,
 		ExpiresAt:    t.ExpiresAt,
 		ClientID:     clientID,
 	}

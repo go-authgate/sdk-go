@@ -19,6 +19,40 @@ import (
 	retry "github.com/appleboy/go-httpretry"
 )
 
+// maxResponseBytes caps the amount of data read from any single HTTP response
+// to prevent denial-of-service via unbounded response bodies.
+const maxResponseBytes = 1 << 20 // 1 MB
+
+// errResponseTooLarge is returned when a server response exceeds maxResponseBytes.
+var errResponseTooLarge = fmt.Errorf("oauth: response body exceeds %d bytes", maxResponseBytes)
+
+// limitedBody returns an io.Reader that reads up to maxResponseBytes+1 from r.
+// Reading one extra byte lets us distinguish a body of exactly maxResponseBytes
+// (valid, leaving N == 1) from one that exceeds the cap (reading at least
+// maxResponseBytes+1 bytes, leaving N == 0).
+func limitedBody(r io.Reader) *io.LimitedReader {
+	return &io.LimitedReader{R: r, N: maxResponseBytes + 1}
+}
+
+// checkLimitExceeded returns errResponseTooLarge when the LimitedReader was
+// fully exhausted (N == 0), meaning the response body exceeded maxResponseBytes.
+// This must be called even on a successful decode: a body that is exactly
+// maxResponseBytes+1 of valid JSON decodes cleanly while still violating the
+// cap, so relying solely on decode errors would let oversized payloads pass.
+// op identifies the calling operation (e.g., "userinfo") so the resulting
+// error carries enough context for debugging. When decodeErr is non-nil it is
+// wrapped via %w alongside errResponseTooLarge so callers can use errors.Is/As
+// against either sentinel.
+func checkLimitExceeded(lr *io.LimitedReader, op string, decodeErr error) error {
+	if lr.N == 0 {
+		if decodeErr != nil {
+			return fmt.Errorf("%w (%s): %w", errResponseTooLarge, op, decodeErr)
+		}
+		return fmt.Errorf("%w (%s)", errResponseTooLarge, op)
+	}
+	return decodeErr
+}
+
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).
 type Token struct {
 	AccessToken  string `json:"access_token"`
@@ -100,7 +134,7 @@ type Error struct {
 // Error implements the error interface.
 func (e *Error) Error() string {
 	if e.Description != "" {
-		return fmt.Sprintf("oauth: %s: %s", e.Code, e.Description)
+		return "oauth: " + e.Code + ": " + e.Description
 	}
 	return "oauth: " + e.Code
 }
@@ -145,22 +179,26 @@ func WithHTTPClient(httpClient *retry.Client) Option {
 }
 
 // NewClient creates a new OAuth 2.0 client.
+// A default retry HTTP client is created only when no client is provided via WithHTTPClient.
 func NewClient(clientID string, endpoints Endpoints, opts ...Option) (*Client, error) {
-	httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
-	if err != nil {
-		return nil, fmt.Errorf("oauth: create http client: %w", err)
-	}
-
 	c := &Client{
-		clientID:   clientID,
-		endpoints:  endpoints,
-		httpClient: httpClient,
+		clientID:  clientID,
+		endpoints: endpoints,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(c)
 		}
 	}
+
+	if c.httpClient == nil {
+		httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
+		if err != nil {
+			return nil, fmt.Errorf("oauth: create http client: %w", err)
+		}
+		c.httpClient = httpClient
+	}
+
 	return c, nil
 }
 
@@ -233,9 +271,11 @@ func (c *Client) ExchangeAuthCode(
 // ClientCredentials requests a token using client credentials (RFC 6749 §4.4).
 func (c *Client) ClientCredentials(ctx context.Context, scopes []string) (*Token, error) {
 	data := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {c.clientID},
-		"client_secret": {c.clientSecret},
+		"grant_type": {"client_credentials"},
+		"client_id":  {c.clientID},
+	}
+	if c.clientSecret != "" {
+		data.Set("client_secret", c.clientSecret)
 	}
 	if len(scopes) > 0 {
 		data.Set("scope", strings.Join(scopes, " "))
@@ -292,9 +332,11 @@ func (c *Client) Introspect(ctx context.Context, token string) (*IntrospectionRe
 	}
 
 	data := url.Values{
-		"token":         {token},
-		"client_id":     {c.clientID},
-		"client_secret": {c.clientSecret},
+		"token":     {token},
+		"client_id": {c.clientID},
+	}
+	if c.clientSecret != "" {
+		data.Set("client_secret", c.clientSecret)
 	}
 
 	var result IntrospectionResult
@@ -323,8 +365,13 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 	}
 
 	var info UserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("oauth: decode userinfo response: %w", err)
+	lr := limitedBody(resp.Body)
+	decodeErr := json.NewDecoder(lr).Decode(&info)
+	if decodeErr != nil {
+		decodeErr = fmt.Errorf("oauth: decode userinfo response: %w", decodeErr)
+	}
+	if err := checkLimitExceeded(lr, "userinfo", decodeErr); err != nil {
+		return nil, err
 	}
 	return &info, nil
 }
@@ -351,8 +398,13 @@ func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*Tok
 	}
 
 	var info TokenInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("oauth: decode tokeninfo response: %w", err)
+	lr := limitedBody(resp.Body)
+	decodeErr := json.NewDecoder(lr).Decode(&info)
+	if decodeErr != nil {
+		decodeErr = fmt.Errorf("oauth: decode tokeninfo response: %w", decodeErr)
+	}
+	if err := checkLimitExceeded(lr, "tokeninfo", decodeErr); err != nil {
+		return nil, err
 	}
 	return &info, nil
 }
@@ -390,19 +442,33 @@ func (c *Client) postForm(ctx context.Context, endpoint string, data url.Values,
 		return parseErrorResponse(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-		return fmt.Errorf("oauth: decode response from %s: %w", endpoint, err)
+	lr := limitedBody(resp.Body)
+	decodeErr := json.NewDecoder(lr).Decode(result)
+	if decodeErr != nil {
+		decodeErr = fmt.Errorf("oauth: decode response from %s: %w", endpoint, decodeErr)
 	}
-	return nil
+	return checkLimitExceeded(lr, endpoint, decodeErr)
 }
 
 // parseErrorResponse reads an OAuth error response body.
 func parseErrorResponse(resp *http.Response) error {
-	body, err := io.ReadAll(resp.Body)
+	lr := limitedBody(resp.Body)
+	body, err := io.ReadAll(lr)
 	if err != nil {
 		return &Error{
 			Code:        "server_error",
 			Description: "failed to read error response",
+			StatusCode:  resp.StatusCode,
+		}
+	}
+
+	// If the read exceeded the limit (N == 0 means the extra sentinel byte
+	// was consumed), return a dedicated error instead of propagating a huge
+	// truncated body in the error description.
+	if lr.N == 0 {
+		return &Error{
+			Code:        "server_error",
+			Description: "error response body exceeds size limit",
 			StatusCode:  resp.StatusCode,
 		}
 	}

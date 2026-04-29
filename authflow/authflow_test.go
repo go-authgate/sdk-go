@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,6 +209,75 @@ func TestRunAuthCodeFlow(t *testing.T) {
 	}
 }
 
+func TestRunAuthCodeFlow_DuplicateCallback(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	state := "test-state"
+	var once sync.Once
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		handled := false
+		once.Do(func() {
+			handled = true
+			if r.URL.Query().Get("state") != state {
+				errCh <- &oauth.Error{Code: "invalid_state"}
+				return
+			}
+			codeCh <- r.URL.Query().Get("code")
+			w.Write([]byte("<html><body><h1>Authentication successful</h1></body></html>"))
+		})
+		if !handled {
+			w.Write(
+				[]byte(
+					"<html><body><p>Already processed. You can close this window.</p></body></html>",
+				),
+			)
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// First callback — should be processed
+	resp, err := http.Get(server.URL + "/callback?code=my-code&state=test-state")
+	if err != nil {
+		t.Fatalf("first callback: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read first response body: %v", err)
+	}
+	if !strings.Contains(string(body), "Authentication successful") {
+		t.Errorf("first response should contain success message, got: %s", string(body))
+	}
+
+	// Second callback — should get "Already processed"
+	resp, err = http.Get(server.URL + "/callback?code=other-code&state=test-state")
+	if err != nil {
+		t.Fatalf("second callback: %v", err)
+	}
+	body, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read second response body: %v", err)
+	}
+	if !strings.Contains(string(body), "Already processed") {
+		t.Errorf("second response should contain 'Already processed', got: %s", string(body))
+	}
+
+	// Verify only the first code was sent
+	select {
+	case code := <-codeCh:
+		if code != "my-code" {
+			t.Errorf("code = %q, want %q", code, "my-code")
+		}
+	default:
+		t.Error("expected code from first callback")
+	}
+}
+
 func TestRunAuthCodeFlow_InvalidState(t *testing.T) {
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
@@ -291,6 +361,8 @@ func TestTokenSource_LoadValid(t *testing.T) {
 		AccessToken:  "cached-token",
 		RefreshToken: "cached-refresh",
 		TokenType:    "Bearer",
+		Scope:        "read write",
+		IDToken:      "cached-id-token",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 		ClientID:     "test-client",
 	}
@@ -315,6 +387,15 @@ func TestTokenSource_LoadValid(t *testing.T) {
 	}
 	if token.AccessToken != "cached-token" {
 		t.Errorf("AccessToken = %q, want %q", token.AccessToken, "cached-token")
+	}
+	if token.RefreshToken != "cached-refresh" {
+		t.Errorf("RefreshToken = %q, want %q", token.RefreshToken, "cached-refresh")
+	}
+	if token.Scope != "read write" {
+		t.Errorf("Scope = %q, want %q", token.Scope, "read write")
+	}
+	if token.IDToken != "cached-id-token" {
+		t.Errorf("IDToken = %q, want %q", token.IDToken, "cached-id-token")
 	}
 }
 
@@ -462,6 +543,8 @@ func TestTokenSource_SaveToken(t *testing.T) {
 		AccessToken:  "saved-token",
 		RefreshToken: "saved-refresh",
 		TokenType:    "Bearer",
+		Scope:        "openid profile email",
+		IDToken:      "saved-id-token",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 	})
 	if saveErr != nil {
@@ -474,6 +557,15 @@ func TestTokenSource_SaveToken(t *testing.T) {
 	}
 	if saved.AccessToken != "saved-token" {
 		t.Errorf("AccessToken = %q, want %q", saved.AccessToken, "saved-token")
+	}
+	if saved.RefreshToken != "saved-refresh" {
+		t.Errorf("RefreshToken = %q, want %q", saved.RefreshToken, "saved-refresh")
+	}
+	if saved.Scope != "openid profile email" {
+		t.Errorf("Scope = %q, want %q", saved.Scope, "openid profile email")
+	}
+	if saved.IDToken != "saved-id-token" {
+		t.Errorf("IDToken = %q, want %q", saved.IDToken, "saved-id-token")
 	}
 }
 
