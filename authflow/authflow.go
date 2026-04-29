@@ -380,15 +380,33 @@ func NewTokenSource(client *oauth.Client, opts ...TokenSourceOption) *TokenSourc
 
 // Token returns a valid token, refreshing from store or server as needed.
 // Returns ErrReauthRequired when no valid or refreshable token is available.
-// Concurrent callers share a single in-flight refresh request via singleflight.
+//
+// Fast path: a read of an already-valid stored token bypasses singleflight so
+// callers are not blocked behind an unrelated in-flight refresh. Slow path:
+// refreshes are coalesced via singleflight and selected against ctx.Done so
+// each caller can honor its own cancellation while the inner refresh runs.
 func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
-	v, err, _ := ts.group.Do("token", func() (any, error) {
+	if ts.store != nil {
+		ts.mu.Lock()
+		stored, err := ts.store.Load(ts.client.ClientID())
+		ts.mu.Unlock()
+		if err == nil && stored.IsValid() {
+			return credstoreToOAuth(&stored), nil
+		}
+	}
+
+	ch := ts.group.DoChan("token", func() (any, error) {
 		return ts.loadOrRefresh(ctx)
 	})
-	if err != nil {
-		return nil, err
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*oauth.Token), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return v.(*oauth.Token), nil
 }
 
 // loadOrRefresh acquires ts.mu only around store I/O so the network refresh

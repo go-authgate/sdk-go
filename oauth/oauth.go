@@ -384,25 +384,8 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 		return nil, &Error{Code: "invalid_request", Description: "userinfo endpoint not configured"}
 	}
 
-	resp, err := c.httpClient.Get(ctx, c.endpoints.UserinfoURL,
-		retry.WithHeader("Authorization", "Bearer "+accessToken),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("oauth: userinfo request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, parseErrorResponse(resp)
-	}
-
 	var info UserInfo
-	lr := limitedBody(resp.Body)
-	decodeErr := json.NewDecoder(lr).Decode(&info)
-	if decodeErr != nil {
-		decodeErr = fmt.Errorf("oauth: decode userinfo response: %w", decodeErr)
-	}
-	if err := checkLimitExceeded(lr, "userinfo", decodeErr); err != nil {
+	if err := c.getJSON(ctx, c.endpoints.UserinfoURL, accessToken, "userinfo", &info); err != nil {
 		return nil, err
 	}
 	return &info, nil
@@ -417,28 +400,41 @@ func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*Tok
 		}
 	}
 
-	resp, err := c.httpClient.Get(ctx, c.endpoints.TokenInfoURL,
+	var info TokenInfo
+	if err := c.getJSON(
+		ctx,
+		c.endpoints.TokenInfoURL,
+		accessToken,
+		"tokeninfo",
+		&info,
+	); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// getJSON sends an authenticated GET request and decodes a JSON response,
+// applying the same response-size cap as postForm. op identifies the operation
+// (e.g., "userinfo", "tokeninfo") for error messages and oversize reporting.
+func (c *Client) getJSON(ctx context.Context, endpoint, accessToken, op string, result any) error {
+	resp, err := c.httpClient.Get(ctx, endpoint,
 		retry.WithHeader("Authorization", "Bearer "+accessToken),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("oauth: tokeninfo request: %w", err)
+		return fmt.Errorf("oauth: %s request: %w", op, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseErrorResponse(resp)
+		return parseErrorResponse(resp)
 	}
 
-	var info TokenInfo
 	lr := limitedBody(resp.Body)
-	decodeErr := json.NewDecoder(lr).Decode(&info)
+	decodeErr := json.NewDecoder(lr).Decode(result)
 	if decodeErr != nil {
-		decodeErr = fmt.Errorf("oauth: decode tokeninfo response: %w", decodeErr)
+		decodeErr = fmt.Errorf("oauth: decode %s response: %w", op, decodeErr)
 	}
-	if err := checkLimitExceeded(lr, "tokeninfo", decodeErr); err != nil {
-		return nil, err
-	}
-	return &info, nil
+	return checkLimitExceeded(lr, op, decodeErr)
 }
 
 // tokenRequest sends a token request and parses the response.
