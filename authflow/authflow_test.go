@@ -556,6 +556,94 @@ func TestTokenSource_SaveToken(t *testing.T) {
 	}
 }
 
+// TestTokenSource_RefreshDoesNotOverwriteConcurrentSave covers the post-refresh
+// re-check in loadOrRefresh: while the network refresh is in flight, an external
+// SaveToken caller writes a newer valid token. Token() must return the external
+// write and not overwrite it with the refresh result.
+func TestTokenSource_RefreshDoesNotOverwriteConcurrentSave(t *testing.T) {
+	store := newStubStore()
+	store.data["test-client"] = credstore.Token{
+		AccessToken:  "expired-token",
+		RefreshToken: "stale-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+		ClientID:     "test-client",
+	}
+
+	var startOnce sync.Once
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startOnce.Do(func() { close(started) })
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "refreshed-access",
+			"refresh_token": "refreshed-refresh",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: server.URL + "/token"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client, WithStore(store))
+
+	type result struct {
+		tok *oauth.Token
+		err error
+	}
+	out := make(chan result, 1)
+	go func() {
+		tok, err := ts.Token(context.Background())
+		out <- result{tok, err}
+	}()
+
+	// Wait until the refresh handler is entered: by that point loadOrRefresh
+	// has already released ts.mu after the initial Load, so SaveToken can run.
+	<-started
+
+	externalToken := &oauth.Token{
+		AccessToken:  "external-saved",
+		RefreshToken: "external-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(2 * time.Hour),
+	}
+	if err := ts.SaveToken(externalToken); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	close(release)
+
+	res := <-out
+	if res.err != nil {
+		t.Fatalf("Token: %v", res.err)
+	}
+	if res.tok.AccessToken != "external-saved" {
+		t.Errorf("Token AccessToken = %q, want %q (external save must win)",
+			res.tok.AccessToken, "external-saved")
+	}
+
+	saved, loadErr := store.Load("test-client")
+	if loadErr != nil {
+		t.Fatalf("Load: %v", loadErr)
+	}
+	if saved.AccessToken != "external-saved" {
+		t.Errorf(
+			"store AccessToken = %q, want %q (refresh result must not overwrite external save)",
+			saved.AccessToken,
+			"external-saved",
+		)
+	}
+}
+
 func TestCheckBrowserAvailability(t *testing.T) {
 	// Just ensure it doesn't panic
 	_ = CheckBrowserAvailability()
