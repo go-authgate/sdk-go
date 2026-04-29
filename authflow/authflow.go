@@ -237,10 +237,10 @@ func RunAuthCodeFlow(
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 
-	// Buffer of 2 protects against blocked sends: callback handler and the
-	// Serve goroutine can both attempt to send before the main goroutine
-	// drains the channel.
 	codeCh := make(chan string, 1)
+	// Buffer of 2 protects errCh against blocked sends: the callback handler
+	// and the Serve goroutine can both attempt to send before the main
+	// goroutine drains the channel.
 	errCh := make(chan error, 2)
 
 	// sync.Once ensures only the first callback is processed; browser retries
