@@ -23,6 +23,12 @@ type TokenVerifier interface {
 // logger.Warn("msg", "err", err, "sub", subject). Implementations should
 // never leak args back to the HTTP client — clients only see the generic
 // RFC 6750 challenge.
+//
+// Implementations must be safe for concurrent use: [Middleware] is invoked
+// from HTTP handlers and may call Warn/Error from many goroutines at once.
+// *slog.Logger is concurrency-safe out of the box; custom adapters around
+// loggers that are not (e.g. some logrus configurations) must add their
+// own synchronization.
 type Logger interface {
 	Warn(msg string, args ...any)
 	Error(msg string, args ...any)
