@@ -544,8 +544,9 @@ func (c *captureLogger) Error(msg string, args ...any) {
 }
 
 // argValue looks up the value paired with key in slog-style alternating
-// key/value args. Returns false when args are malformed (odd length or
-// non-string key) so callers can distinguish absence from corruption.
+// key/value args, returning (value, true) on match or (nil, false) when
+// the key is absent. Test args are well-formed by construction, so the
+// helper does not separately signal malformed input.
 func argValue(args []any, key string) (any, bool) {
 	for i := 0; i+1 < len(args); i += 2 {
 		k, ok := args[i].(string)
