@@ -460,8 +460,84 @@ func TestTokenSource_NoToken(t *testing.T) {
 
 	ts := NewTokenSource(client, WithStore(store))
 	_, err = ts.Token(context.Background())
-	if err == nil {
-		t.Fatal("expected error when no token available")
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired, got: %v", err)
+	}
+}
+
+func TestTokenSource_NoStore(t *testing.T) {
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: "http://unused"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client) // no store configured
+	_, err = ts.Token(context.Background())
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired, got: %v", err)
+	}
+}
+
+func TestTokenSource_ExpiredNoRefreshToken(t *testing.T) {
+	store := newStubStore()
+	store.data["test-client"] = credstore.Token{
+		AccessToken: "expired-token",
+		// no refresh token
+		TokenType: "Bearer",
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+		ClientID:  "test-client",
+	}
+
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: "http://unused"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client, WithStore(store))
+	_, err = ts.Token(context.Background())
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired, got: %v", err)
+	}
+}
+
+func TestTokenSource_RefreshInvalidGrant(t *testing.T) {
+	store := newStubStore()
+	store.data["test-client"] = credstore.Token{
+		AccessToken:  "expired-token",
+		RefreshToken: "revoked-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+		ClientID:     "test-client",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":             "invalid_grant",
+			"error_description": "refresh token revoked",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: server.URL + "/token"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client, WithStore(store))
+	_, err = ts.Token(context.Background())
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired for invalid_grant refresh, got: %v", err)
 	}
 }
 
@@ -481,6 +557,9 @@ func TestTokenSource_LoadError(t *testing.T) {
 	_, err = ts.Token(context.Background())
 	if err == nil {
 		t.Fatal("expected error for store load failure")
+	}
+	if errors.Is(err, ErrReauthRequired) {
+		t.Errorf("transient load error should NOT match ErrReauthRequired, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "disk I/O error") {
 		t.Errorf("error should contain root cause, got: %v", err)
@@ -566,6 +645,94 @@ func TestTokenSource_SaveToken(t *testing.T) {
 	}
 	if saved.IDToken != "saved-id-token" {
 		t.Errorf("IDToken = %q, want %q", saved.IDToken, "saved-id-token")
+	}
+}
+
+// TestTokenSource_RefreshDoesNotOverwriteConcurrentSave covers the post-refresh
+// re-check in loadOrRefresh: while the network refresh is in flight, an external
+// SaveToken caller writes a newer valid token. Token() must return the external
+// write and not overwrite it with the refresh result.
+func TestTokenSource_RefreshDoesNotOverwriteConcurrentSave(t *testing.T) {
+	store := newStubStore()
+	store.data["test-client"] = credstore.Token{
+		AccessToken:  "expired-token",
+		RefreshToken: "stale-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+		ClientID:     "test-client",
+	}
+
+	var startOnce sync.Once
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startOnce.Do(func() { close(started) })
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "refreshed-access",
+			"refresh_token": "refreshed-refresh",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: server.URL + "/token"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client, WithStore(store))
+
+	type result struct {
+		tok *oauth.Token
+		err error
+	}
+	out := make(chan result, 1)
+	go func() {
+		tok, err := ts.Token(context.Background())
+		out <- result{tok, err}
+	}()
+
+	// Wait until the refresh handler is entered: by that point loadOrRefresh
+	// has already released ts.mu after the initial Load, so SaveToken can run.
+	<-started
+
+	externalToken := &oauth.Token{
+		AccessToken:  "external-saved",
+		RefreshToken: "external-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(2 * time.Hour),
+	}
+	if err := ts.SaveToken(externalToken); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+
+	close(release)
+
+	res := <-out
+	if res.err != nil {
+		t.Fatalf("Token: %v", res.err)
+	}
+	if res.tok.AccessToken != "external-saved" {
+		t.Errorf("Token AccessToken = %q, want %q (external save must win)",
+			res.tok.AccessToken, "external-saved")
+	}
+
+	saved, loadErr := store.Load("test-client")
+	if loadErr != nil {
+		t.Fatalf("Load: %v", loadErr)
+	}
+	if saved.AccessToken != "external-saved" {
+		t.Errorf(
+			"store AccessToken = %q, want %q (refresh result must not overwrite external save)",
+			saved.AccessToken,
+			"external-saved",
+		)
 	}
 }
 

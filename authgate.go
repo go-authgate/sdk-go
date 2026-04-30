@@ -132,17 +132,22 @@ func New(
 	store := credstore.DefaultTokenSecureStore(cfg.serviceName, cfg.storePath)
 	ts := authflow.NewTokenSource(client, authflow.WithStore(store))
 
-	// 5. Return cached/refreshed token if available
+	// 5. Return a cached/refreshed token if available. Only ErrReauthRequired
+	// drops through to the interactive flow; other errors (transient store
+	// or refresh failures) propagate so callers don't surprise users with an
+	// unwanted browser pop-up.
 	token, err := ts.Token(ctx)
 	if err == nil {
 		return client, token, nil
+	}
+	if !errors.Is(err, authflow.ErrReauthRequired) {
+		return nil, nil, fmt.Errorf("authgate: get token: %w", err)
 	}
 
 	// 6. No valid token — run the appropriate authentication flow.
 	// Treat any non-Device value as auto-detect: explicit Browser forces
 	// the auth-code flow, while Auto (and any unknown value) probes for a
-	// usable browser before falling back to the device flow. This preserves
-	// the prior switch's default-case behavior for unrecognized FlowModes.
+	// usable browser before falling back to the device flow.
 	useBrowser := cfg.flowMode == FlowModeBrowser ||
 		(cfg.flowMode != FlowModeDevice && authflow.CheckBrowserAvailability())
 	if useBrowser {
