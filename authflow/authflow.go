@@ -401,6 +401,10 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Detach the ctx that singleflight passes into loadOrRefresh from the
 	// caller's cancellation. singleflight runs the function once with the
 	// first caller's ctx, so without this the first caller's timeout would
