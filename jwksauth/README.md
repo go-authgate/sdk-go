@@ -108,8 +108,37 @@ Per-route policy; an empty slice means "this dimension is not checked".
 
 Allowlist mismatches return `401 invalid_token` (generic) so the allowlist
 itself is not probeable. The full reason is logged server-side via the
-configured logger (defaults to `log.Default()`; override with
+configured logger (defaults to `slog.Default()`; override with
 `jwksauth.WithLogger`).
+
+The `Logger` interface mirrors `log/slog`, so `*slog.Logger` satisfies it
+directly:
+
+```go
+type Logger interface {
+    Warn(msg string, args ...any)
+    Error(msg string, args ...any)
+}
+
+logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+mw := jwksauth.Middleware(v, rule, jwksauth.WithLogger(logger))
+```
+
+Other structured loggers (logrus, zap, zerolog) work via a thin adapter —
+e.g. for `*logrus.Logger`:
+
+```go
+type logrusAdapter struct{ l *logrus.Logger }
+
+func (a logrusAdapter) Warn(msg string, args ...any) {
+    a.l.WithFields(toFields(args)).Warn(msg)
+}
+func (a logrusAdapter) Error(msg string, args ...any) {
+    a.l.WithFields(toFields(args)).Error(msg)
+}
+// toFields converts slog-style alternating key/value args into a
+// logrus.Fields map; implement once and reuse.
+```
 
 ## RFC 6750 error responses
 

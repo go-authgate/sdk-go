@@ -508,11 +508,14 @@ func runMiddleware(
 	v TokenVerifier,
 	rule AccessRule,
 	modify func(*http.Request),
+	opts ...MiddlewareOption,
 ) *httptest.ResponseRecorder {
 	t.Helper()
-	handler := Middleware(v, rule)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	handler := Middleware(v, rule, opts...)(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	if modify != nil {
 		modify(req)
@@ -520,4 +523,127 @@ func runMiddleware(
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+type capturedLog struct {
+	level string
+	msg   string
+	args  []any
+}
+
+type captureLogger struct {
+	records []capturedLog
+}
+
+func (c *captureLogger) Warn(msg string, args ...any) {
+	c.records = append(c.records, capturedLog{level: "warn", msg: msg, args: args})
+}
+
+func (c *captureLogger) Error(msg string, args ...any) {
+	c.records = append(c.records, capturedLog{level: "error", msg: msg, args: args})
+}
+
+// argValue looks up the value paired with key in slog-style alternating
+// key/value args. Returns false when args are malformed (odd length or
+// non-string key) so callers can distinguish absence from corruption.
+func argValue(args []any, key string) (any, bool) {
+	for i := 0; i+1 < len(args); i += 2 {
+		k, ok := args[i].(string)
+		if !ok {
+			return nil, false
+		}
+		if k == key {
+			return args[i+1], true
+		}
+	}
+	return nil, false
+}
+
+func TestMiddleware_HappyPath_ProducesNoLog(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, nil)
+
+	cl := &captureLogger{}
+	rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}, WithLogger(cl))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if len(cl.records) != 0 {
+		t.Errorf("expected no log records, got %+v", cl.records)
+	}
+}
+
+func TestMiddleware_LogsTokenVerificationFailure(t *testing.T) {
+	verifyErr := errors.New("signature: invalid")
+	cl := &captureLogger{}
+	rec := runMiddleware(t, stubVerifier{err: verifyErr}, AccessRule{}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer aaa.bbb.ccc")
+	}, WithLogger(cl))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+	if len(cl.records) != 1 {
+		t.Fatalf("want 1 log record, got %d: %+v", len(cl.records), cl.records)
+	}
+	rec0 := cl.records[0]
+	if rec0.level != "warn" {
+		t.Errorf("level = %q, want warn", rec0.level)
+	}
+	if rec0.msg != "jwksauth: token verification failed" {
+		t.Errorf("msg = %q", rec0.msg)
+	}
+	got, ok := argValue(rec0.args, "err")
+	if !ok {
+		t.Fatalf("missing err arg in %+v", rec0.args)
+	}
+	if got != verifyErr {
+		t.Errorf("err arg = %v, want %v", got, verifyErr)
+	}
+}
+
+func TestMiddleware_LogsPolicyReject(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "swrd"})
+
+	cl := &captureLogger{}
+	rec := runMiddleware(t, v, AccessRule{Tenants: []string{"oa"}}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}, WithLogger(cl))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("WWW-Authenticate"), `error="invalid_token"`) {
+		t.Errorf("WWW-Authenticate %q missing invalid_token", rec.Header().Get("WWW-Authenticate"))
+	}
+	if len(cl.records) != 1 {
+		t.Fatalf("want 1 log record, got %d: %+v", len(cl.records), cl.records)
+	}
+	rec0 := cl.records[0]
+	if rec0.level != "warn" {
+		t.Errorf("level = %q, want warn", rec0.level)
+	}
+	if rec0.msg != "jwksauth: policy reject" {
+		t.Errorf("msg = %q", rec0.msg)
+	}
+	for _, key := range []string{"reason", "sub", "iss"} {
+		if _, ok := argValue(rec0.args, key); !ok {
+			t.Errorf("missing %q in args %+v", key, rec0.args)
+		}
+	}
+	if iss, _ := argValue(rec0.args, "iss"); iss != fi.URL() {
+		t.Errorf("iss arg = %v, want %q", iss, fi.URL())
+	}
 }

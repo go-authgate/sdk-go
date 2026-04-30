@@ -3,7 +3,7 @@ package jwksauth
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 )
 
@@ -14,11 +14,18 @@ type TokenVerifier interface {
 	Verify(ctx context.Context, raw string) (*TokenInfo, error)
 }
 
-// Logger is the minimal logging surface [Middleware] needs. The standard
-// library's *log.Logger satisfies it; pass any structured logger by
-// adapting Printf.
+// Logger is the minimal logging surface [Middleware] needs. The interface
+// mirrors [log/slog]: *slog.Logger satisfies it directly. Other structured
+// loggers (logrus, zap, zerolog) can be adapted with a thin wrapper that
+// translates the slog-style key/value args into the target API.
+//
+// args follows slog's convention: alternating string keys and values, e.g.
+// logger.Warn("msg", "err", err, "sub", subject). Implementations should
+// never leak args back to the HTTP client — clients only see the generic
+// RFC 6750 challenge.
 type Logger interface {
-	Printf(format string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
 }
 
 // MiddlewareOption configures [Middleware].
@@ -35,10 +42,10 @@ type middlewareOptionFunc func(*middlewareConfig)
 func (f middlewareOptionFunc) apply(c *middlewareConfig) { f(c) }
 
 // WithLogger sets the logger used for server-side reporting of verification
-// failures. Defaults to the standard library's [log.Default]. Failures are
-// always logged with full detail server-side; clients receive the generic
-// RFC 6750 challenge so verifier internals (expected issuer, audience,
-// allowlist contents) do not leak.
+// failures and policy rejects. Defaults to [slog.Default]. Passing nil
+// leaves the default in place. Failures are always logged with full detail
+// server-side; clients receive the generic RFC 6750 challenge so verifier
+// internals (expected issuer, audience, allowlist contents) do not leak.
 func WithLogger(l Logger) MiddlewareOption {
 	return middlewareOptionFunc(func(c *middlewareConfig) {
 		if l != nil {
@@ -71,7 +78,7 @@ func Middleware(
 	rule AccessRule,
 	opts ...MiddlewareOption,
 ) func(http.Handler) http.Handler {
-	cfg := middlewareConfig{logger: log.Default()}
+	cfg := middlewareConfig{logger: slog.Default()}
 	for _, o := range opts {
 		if o != nil {
 			o.apply(&cfg)
@@ -100,7 +107,7 @@ func Middleware(
 			}
 			info, err := v.Verify(r.Context(), raw)
 			if err != nil {
-				cfg.logger.Printf("jwksauth: token verification failed: %v", err)
+				cfg.logger.Warn("jwksauth: token verification failed", "err", err)
 				// Distinguish transient server-side failures we can reliably
 				// detect (context cancellation/deadline while go-oidc is
 				// fetching the JWKS or doing signature math) from real
@@ -125,9 +132,11 @@ func Middleware(
 				}
 			}
 			if reason, ok := rule.checkClaims(info); !ok {
-				cfg.logger.Printf(
-					"jwksauth: policy reject: %s (sub=%q iss=%q)",
-					reason, info.Subject, info.Issuer,
+				cfg.logger.Warn(
+					"jwksauth: policy reject",
+					"reason", reason,
+					"sub", info.Subject,
+					"iss", info.Issuer,
 				)
 				WriteAuthError(
 					w,
