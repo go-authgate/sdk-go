@@ -407,13 +407,13 @@ func TestMiddleware_DomainPresent_TenantAbsent(t *testing.T) {
 
 // TestMiddleware_AcceptsTokenWithNoCustomClaims pins the contract that
 // the SDK verifies any AuthGate-issued token regardless of which custom
-// claims it carries. AuthGate today emits tokens with only the standard
-// claims (iss, sub, aud, exp, nbf, scope); the Domain/Tenant/
-// ServiceAccount/Project fields on Claims are forward-looking and remain
-// empty until the server populates them. With AccessRule{} (no
+// claims it carries. AuthGate today emits the standard claims (iss, sub,
+// aud, exp, nbf, scope) plus optional service_account and project; the
+// Domain and Tenant fields on Claims are forward-looking and remain
+// empty until the server starts populating them. With AccessRule{} (no
 // allowlists) and no SetIssuerDomains enforcement, only signature, iss,
 // aud, exp, and nbf are checked — guaranteeing the SDK works regardless
-// of whether the server has been updated.
+// of whether the server emits any custom claims at all.
 func TestMiddleware_AcceptsTokenWithNoCustomClaims(t *testing.T) {
 	fi := newFakeIssuer(t)
 	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
