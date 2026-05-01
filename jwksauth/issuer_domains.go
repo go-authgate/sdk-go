@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// ParseIssuerTenants parses the cross-tenant pinning configuration. The
+// ParseIssuerDomains parses the cross-domain pinning configuration. The
 // encoding is:
 //
-//	iss1=tenantA,tenantB;iss2=tenantC,tenantD
+//	iss1=domainA,domainB;iss2=domainC,domainD
 //
 // known is the set of canonical issuers permitted as left-hand sides; pass
 // [MultiVerifier.Issuers]() so a typo in the variable is caught at startup.
@@ -17,18 +17,18 @@ import (
 // Rules enforced:
 //   - Every entry's left-hand side must appear in known.
 //   - Every issuer in known must appear exactly once in raw — a silent gap
-//     would let one issuer mint tokens for any tenant.
-//   - A tenant must be owned by exactly one issuer.
+//     would let one issuer mint tokens for any domain.
+//   - A domain must be owned by exactly one issuer.
 //   - Same-issuer duplicates ("oa,oa") are reported as typos so the error
 //     points at the actual mistake rather than a confusing cross-issuer
 //     overlap message.
 //
-// Tenant codes are lower-cased so [AccessRule] and the cross-tenant
-// allowlist enforcement can compare tenants case-insensitively.
+// Domain codes are lower-cased so [AccessRule] and the cross-domain
+// allowlist enforcement can compare domains case-insensitively.
 //
 // Returns nil with no error when raw is empty — the caller can treat that
-// as "cross-tenant enforcement disabled".
-func ParseIssuerTenants(raw string, known []string) (map[string][]string, error) {
+// as "cross-domain enforcement disabled".
+func ParseIssuerDomains(raw string, known []string) (map[string][]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		// nil map is the documented signal for "enforcement disabled" —
@@ -46,10 +46,10 @@ func ParseIssuerTenants(raw string, known []string) (map[string][]string, error)
 		if entry == "" {
 			continue
 		}
-		iss, tenantsRaw, ok := strings.Cut(entry, "=")
+		iss, domainsRaw, ok := strings.Cut(entry, "=")
 		if !ok {
 			return nil, fmt.Errorf(
-				"malformed ISSUER_TENANTS entry %q (want iss=tenantA,tenantB)",
+				"malformed ISSUER_DOMAINS entry %q (want iss=domainA,domainB)",
 				entry,
 			)
 		}
@@ -58,53 +58,53 @@ func ParseIssuerTenants(raw string, known []string) (map[string][]string, error)
 			canonical := slices.Clone(known)
 			slices.Sort(canonical)
 			return nil, fmt.Errorf(
-				"ISSUER_TENANTS issuer %q is not a registered issuer (known: %v)",
+				"ISSUER_DOMAINS issuer %q is not a registered issuer (known: %v)",
 				iss, canonical,
 			)
 		}
 
-		tenants := trimNonEmpty(strings.Split(tenantsRaw, ","), true)
-		if len(tenants) == 0 {
-			return nil, fmt.Errorf("issuer %q in ISSUER_TENANTS has no tenants", iss)
+		domains := trimNonEmpty(strings.Split(domainsRaw, ","), true)
+		if len(domains) == 0 {
+			return nil, fmt.Errorf("issuer %q in ISSUER_DOMAINS has no domains", iss)
 		}
 		if _, dup := out[iss]; dup {
-			return nil, fmt.Errorf("duplicate issuer in ISSUER_TENANTS: %s", iss)
+			return nil, fmt.Errorf("duplicate issuer in ISSUER_DOMAINS: %s", iss)
 		}
-		out[iss] = tenants
+		out[iss] = domains
 	}
 
 	for _, iss := range known {
 		if _, ok := out[iss]; !ok {
 			return nil, fmt.Errorf(
-				"issuer %q is missing from ISSUER_TENANTS (every registered issuer must be listed when ISSUER_TENANTS is set)",
+				"issuer %q is missing from ISSUER_DOMAINS (every registered issuer must be listed when ISSUER_DOMAINS is set)",
 				iss,
 			)
 		}
 	}
 
-	// A tenant must be owned by exactly ONE issuer; otherwise the cross-
-	// tenant defense degrades silently. Distinguish "same tenant listed
+	// A domain must be owned by exactly ONE issuer; otherwise the cross-
+	// domain defense degrades silently. Distinguish "same domain listed
 	// twice for the same issuer" (typo, e.g. "oa,oa") from a true cross-
 	// issuer overlap so the error message points at the actual mistake.
-	tenantOwner := make(map[string]string, len(out))
-	for iss, tenants := range out {
-		for _, t := range tenants {
-			if other, dup := tenantOwner[t]; dup {
+	domainOwner := make(map[string]string, len(out))
+	for iss, domains := range out {
+		for _, d := range domains {
+			if other, dup := domainOwner[d]; dup {
 				if other == iss {
 					return nil, fmt.Errorf(
-						"tenant %q listed twice for issuer %q in ISSUER_TENANTS — drop the duplicate",
-						t,
+						"domain %q listed twice for issuer %q in ISSUER_DOMAINS — drop the duplicate",
+						d,
 						iss,
 					)
 				}
 				return nil, fmt.Errorf(
-					"tenant %q listed under multiple issuers in ISSUER_TENANTS (%q and %q) — a tenant must be owned by exactly one issuer",
-					t,
+					"domain %q listed under multiple issuers in ISSUER_DOMAINS (%q and %q) — a domain must be owned by exactly one issuer",
+					d,
 					other,
 					iss,
 				)
 			}
-			tenantOwner[t] = iss
+			domainOwner[d] = iss
 		}
 	}
 	return out, nil

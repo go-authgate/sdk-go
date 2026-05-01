@@ -60,9 +60,33 @@ func profile(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
+## Domain and Tenant hierarchy
+
+AuthGate partitions tokens along two dimensions:
+
+- **Domain** (`domain` claim, e.g. `oa`, `swrd`, `hwrd`) is the top-level
+  partition. Every token has exactly one Domain.
+- **Tenant** (`tenant` claim, e.g. `a76`, `a78`) is an *optional* sub-room
+  inside a Domain. Domains that have no sub-room concept simply omit the
+  claim, and the SDK exposes that as `info.Tenant() == ""`.
+
+Both claims appear independently in the JWT payload:
+
+```json
+// Domain-only token (Domain has no Tenant concept)
+{ "iss": "https://auth.example.com", "domain": "oa" }
+
+// Domain + Tenant token (sub-room inside a Domain)
+{ "iss": "https://auth.example.com", "domain": "oa", "tenant": "a76" }
+```
+
+`AccessRule` filters on Domain only; the optional Tenant value is exposed
+on `TokenInfo` for application code to read but is not enforced at the
+allowlist level.
+
 ## Multiple issuers
 
-For multi-region / multi-tenant / migration deployments, build a
+For multi-region / multi-domain / migration deployments, build a
 `MultiVerifier`. It runs OIDC discovery for every issuer in parallel
 (bounded by a single total timeout) and routes each request to the right
 verifier based on the token's `iss` claim.
@@ -73,25 +97,29 @@ mv, err := jwksauth.NewMultiVerifier(ctx,
     "https://api.example.com")
 if err != nil { log.Fatal(err) }
 
-// Optional: pin each issuer to the tenant codes it owns. With short
-// tenant codes ("oa" / "hwrd" / "swrd") this stops a compromised issuer
-// from minting tokens that claim a tenant owned by another issuer.
-if err := mv.SetIssuerTenants(
+// Optional: pin each issuer to the Domain codes it owns. With short
+// domain codes ("oa" / "hwrd" / "swrd") this stops a compromised issuer
+// from minting tokens that claim a Domain owned by another issuer.
+//
+// Tenants live entirely inside a Domain, so they are not part of the
+// cross-issuer pinning encoding.
+if err := mv.SetIssuerDomains(
     "https://auth-a.example.com=oa,hwrd;https://auth-b.example.com=swrd",
 ); err != nil {
     log.Fatal(err)
 }
 
 mux.Handle("/api/admin", jwksauth.Middleware(mv, jwksauth.AccessRule{
+    Domains:         []string{"oa"},
     ServiceAccounts: []string{"sync-bot@oa.local"},
     Projects:        []string{"admin-tools"},
 })(http.HandlerFunc(admin)))
 ```
 
-`SetIssuerTenants` validates strictly:
+`SetIssuerDomains` validates strictly:
 
 - Every issuer registered with the verifier must appear in the string.
-- A tenant must be owned by exactly one issuer.
+- A Domain must be owned by exactly one issuer.
 - Same-issuer duplicates (`oa,oa`) are reported as typos so the error points
   at the actual mistake rather than a confusing cross-issuer overlap message.
 
@@ -102,9 +130,13 @@ Per-route policy; an empty slice means "this dimension is not checked".
 | Field             | Required claim    | Match     | Notes                                                                           |
 | ----------------- | ----------------- | --------- | ------------------------------------------------------------------------------- |
 | `Scopes`          | `scope`           | space-set | Reports `403 insufficient_scope` and advertises the scope on `WWW-Authenticate` |
-| `Tenants`         | `tenant`          | case-fold | SDK lower-cases the rule on registration                                        |
+| `Domains`         | `domain`          | case-fold | SDK lower-cases the rule on registration                                        |
 | `ServiceAccounts` | `service_account` | exact     | Case-sensitive                                                                  |
 | `Projects`        | `project`         | exact     | Case-sensitive                                                                  |
+
+The optional `tenant` claim is read from the JWT and exposed on
+`TokenInfo.Tenant()` (case-folded) and `TokenInfo.Claims.Tenant` (raw), but
+is not part of the allowlist surface.
 
 Allowlist mismatches return `401 invalid_token` (generic) so the allowlist
 itself is not probeable. The full reason is logged server-side via the

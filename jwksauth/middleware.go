@@ -64,7 +64,7 @@ func WithLogger(l Logger) MiddlewareOption {
 //   - All checks pass: [TokenInfo] is attached to the request context; use
 //     [TokenInfoFromContext] in your handler to read it.
 //
-// rule is canonicalized once on construction (Tenants lower-cased, slices
+// rule is canonicalized once on construction (Domains lower-cased, slices
 // cloned), so callers may safely mutate their input afterwards.
 func Middleware(
 	v TokenVerifier,
