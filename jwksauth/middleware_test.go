@@ -405,6 +405,53 @@ func TestMiddleware_DomainPresent_TenantAbsent(t *testing.T) {
 	}
 }
 
+// TestMiddleware_AcceptsTokenWithNoCustomClaims pins the contract that
+// the SDK verifies any AuthGate-issued token regardless of which custom
+// claims it carries. With AccessRule{} (no allowlists) and no
+// SetIssuerDomains enforcement, only signature, iss, aud, exp, and nbf
+// are checked — Domain, Tenant, ServiceAccount, and Project are decoded
+// into Claims but not enforced. This guarantees the SDK is forwards- and
+// backwards-compatible with any AuthGate token shape.
+func TestMiddleware_AcceptsTokenWithNoCustomClaims(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, nil)
+	rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	})
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestMiddleware_AcceptsLegacyClaimShape pins compatibility with the
+// pre-rename AuthGate token shape, where the partition was emitted as
+// `tenant` (not `domain`). After the rename, such a token still verifies
+// successfully when the consumer does not configure Domain/Tenant
+// allowlists; only the field interpretation shifts (the legacy `tenant`
+// value populates Claims.Tenant, the new sub-room field).
+func TestMiddleware_AcceptsLegacyClaimShape(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{
+		"tenant":          "oa",
+		"service_account": "sync@oa",
+		"project":         "p1",
+	})
+	rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	})
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
 func TestMultiVerifier_RoutesByIssuer(t *testing.T) {
 	a := newFakeIssuer(t)
 	b := newFakeIssuer(t)
