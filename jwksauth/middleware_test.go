@@ -694,10 +694,10 @@ func TestMiddleware_LogsPolicyReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "swrd"})
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"domain": "swrd"})
 
 	cl := &captureLogger{}
-	rec := runMiddleware(t, v, AccessRule{Tenants: []string{"oa"}}, func(req *http.Request) {
+	rec := runMiddleware(t, v, AccessRule{Domains: []string{"oa"}}, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}, WithLogger(cl))
 
