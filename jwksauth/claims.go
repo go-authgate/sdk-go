@@ -12,12 +12,18 @@ import (
 // All fields are optional — services that don't use a given dimension can
 // leave the corresponding [AccessRule] slice empty and the claim is ignored.
 //
+// AuthGate's hierarchy is two-level: a Domain (e.g. "oa", "swrd", "hwrd") is
+// the top-level partition, and an optional Tenant (e.g. "a76", "a78") names
+// a sub-room inside a Domain. Tokens for Domains that have no sub-room
+// concept simply omit the tenant claim.
+//
 // If a deployment uses namespaced claims (e.g.
-// "https://authgate.example.com/tenant"), copy this struct and adjust the
+// "https://authgate.example.com/domain"), copy this struct and adjust the
 // json tags rather than monkey-patching the SDK.
 type Claims struct {
 	ClientID       string `json:"client_id,omitempty"`
 	Scope          string `json:"scope,omitempty"`
+	Domain         string `json:"domain,omitempty"`
 	Tenant         string `json:"tenant,omitempty"`
 	ServiceAccount string `json:"service_account,omitempty"`
 	Project        string `json:"project,omitempty"`
@@ -46,8 +52,16 @@ func (t *TokenInfo) HasScope(scope string) bool {
 	return slices.Contains(t.Scopes, scope)
 }
 
-// Tenant returns the case-folded tenant code used for [AccessRule] allowlist
-// comparisons. Use t.Claims.Tenant if you need the original case.
+// Domain returns the case-folded domain code used for [AccessRule] allowlist
+// comparisons. Use t.Claims.Domain if you need the original case.
+func (t *TokenInfo) Domain() string {
+	return strings.ToLower(t.Claims.Domain)
+}
+
+// Tenant returns the case-folded tenant code (the optional sub-room inside a
+// Domain). Returns "" when the token has no tenant claim — that is the
+// documented "Domain has no sub-room" signal. Use t.Claims.Tenant if you
+// need the original case.
 func (t *TokenInfo) Tenant() string {
 	return strings.ToLower(t.Claims.Tenant)
 }

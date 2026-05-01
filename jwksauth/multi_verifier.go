@@ -31,16 +31,16 @@ var (
 // single map lookup followed by the chosen verifier's signature check.
 //
 // A MultiVerifier is safe for concurrent use after construction.
-// [MultiVerifier.SetIssuerTenants] swaps the pinning configuration via an
+// [MultiVerifier.SetIssuerDomains] swaps the pinning configuration via an
 // atomic pointer, so it is also safe to call concurrently with Verify.
 type MultiVerifier struct {
 	verifiers map[string]*oidc.IDTokenVerifier
 
-	// issuerTenants pins each issuer to the lower-cased tenant codes it is
+	// issuerDomains pins each issuer to the lower-cased domain codes it is
 	// permitted to sign for. A nil pointer means enforcement is disabled.
-	// Loaded atomically so SetIssuerTenants can be called after Verify
+	// Loaded atomically so SetIssuerDomains can be called after Verify
 	// goroutines are already running, without a data race.
-	issuerTenants atomic.Pointer[map[string][]string]
+	issuerDomains atomic.Pointer[map[string][]string]
 
 	timeout time.Duration
 }
@@ -113,10 +113,10 @@ func newMultiVerifier(
 	}, nil
 }
 
-// SetIssuerTenants enables cross-tenant defense by pinning each issuer to
-// the tenant codes it is permitted to sign for. The encoding is:
+// SetIssuerDomains enables cross-domain defense by pinning each issuer to
+// the domain codes it is permitted to sign for. The encoding is:
 //
-//	iss1=tenantA,tenantB;iss2=tenantC
+//	iss1=domainA,domainB;iss2=domainC
 //
 // The issuer keys on the left-hand side must exactly match the canonical
 // issuer strings returned by [MultiVerifier.Issuers]. These are the values
@@ -126,22 +126,26 @@ func newMultiVerifier(
 // generate the expected keys.
 //
 // Every issuer registered with the verifier must appear exactly once in
-// raw, and a tenant must be owned by exactly one issuer. Both rules are
+// raw, and a domain must be owned by exactly one issuer. Both rules are
 // enforced strictly so a typo or operational mistake fails fast at
 // configuration time rather than silently disabling the check.
 //
-// Pass an empty string to disable cross-tenant enforcement; safe to call
+// Cross-issuer enforcement is Domain-level only. The optional sub-room
+// Tenant claim lives entirely inside a Domain, so there is no cross-issuer
+// Tenant exposure to defend against.
+//
+// Pass an empty string to disable cross-domain enforcement; safe to call
 // concurrently with [MultiVerifier.Verify] (the swap is atomic).
-func (v *MultiVerifier) SetIssuerTenants(raw string) error {
-	parsed, err := ParseIssuerTenants(raw, v.Issuers())
+func (v *MultiVerifier) SetIssuerDomains(raw string) error {
+	parsed, err := ParseIssuerDomains(raw, v.Issuers())
 	if err != nil {
 		return err
 	}
 	if parsed == nil {
-		v.issuerTenants.Store(nil)
+		v.issuerDomains.Store(nil)
 		return nil
 	}
-	v.issuerTenants.Store(&parsed)
+	v.issuerDomains.Store(&parsed)
 	return nil
 }
 
@@ -157,13 +161,13 @@ func (v *MultiVerifier) Issuers() []string {
 	return out
 }
 
-// IssuerTenants returns the configured cross-tenant allowlist keyed by
+// IssuerDomains returns the configured cross-domain allowlist keyed by
 // canonical issuer, or nil when enforcement is disabled — whether
-// [MultiVerifier.SetIssuerTenants] was never called or was last called
+// [MultiVerifier.SetIssuerDomains] was never called or was last called
 // with an empty string. The returned map and its slices may be modified
 // by callers (a defensive copy is made).
-func (v *MultiVerifier) IssuerTenants() map[string][]string {
-	cur := v.issuerTenants.Load()
+func (v *MultiVerifier) IssuerDomains() map[string][]string {
+	cur := v.issuerDomains.Load()
 	if cur == nil {
 		return nil
 	}
@@ -184,12 +188,12 @@ func (v *MultiVerifier) IssuerTenants() map[string][]string {
 //  2. Reject tokens whose iss is not registered ([ErrUntrustedIssuer]).
 //  3. Run the chosen verifier, which authoritatively re-checks signature,
 //     iss, aud, exp, nbf.
-//  4. If [MultiVerifier.SetIssuerTenants] was configured, enforce that
-//     this issuer is allowed to sign for the token's tenant.
+//  4. If [MultiVerifier.SetIssuerDomains] was configured, enforce that
+//     this issuer is allowed to sign for the token's domain.
 //
 // Errors are intentionally low-detail to limit information disclosure to
 // callers that bypass [Middleware]; full diagnostic context is available
-// through [MultiVerifier.IssuerTenants] and the canonical issuer list.
+// through [MultiVerifier.IssuerDomains] and the canonical issuer list.
 func (v *MultiVerifier) Verify(ctx context.Context, raw string) (*TokenInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, v.timeout)
 	defer cancel()
@@ -214,14 +218,14 @@ func (v *MultiVerifier) Verify(ctx context.Context, raw string) (*TokenInfo, err
 	// Use tok.Issuer (post-verification) rather than the unverified iss —
 	// Verify already proved them equal, but reading the verified value
 	// keeps the trust boundary self-evident.
-	if cur := v.issuerTenants.Load(); cur != nil {
+	if cur := v.issuerDomains.Load(); cur != nil {
 		allowed := (*cur)[tok.Issuer]
-		if !slices.Contains(allowed, info.Tenant()) {
+		if !slices.Contains(allowed, info.Domain()) {
 			// Don't echo the allowlist back: callers that bypass Middleware
-			// would otherwise probe the configured tenants by feeding tokens.
+			// would otherwise probe the configured domains by feeding tokens.
 			return nil, fmt.Errorf(
-				"issuer not permitted for this tenant: tenant=%q",
-				info.Claims.Tenant,
+				"issuer not permitted for this domain: domain=%q",
+				info.Claims.Domain,
 			)
 		}
 	}

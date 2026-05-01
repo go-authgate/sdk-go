@@ -32,7 +32,13 @@
 //	mux.Handle("/api/profile", jwksauth.Middleware(v, jwksauth.AccessRule{})(profileHandler))
 //	mux.Handle("/api/data",    jwksauth.Middleware(v, jwksauth.AccessRule{Scopes: []string{"email"}})(dataHandler))
 //
-// # Multiple issuers (multi-region / multi-tenant / migration)
+// # Multiple issuers (multi-region / multi-domain / migration)
+//
+// AuthGate's hierarchy is two-level: a Domain (e.g. "oa", "swrd", "hwrd") is
+// the top-level partition, and an optional Tenant (e.g. "a76", "a78") names
+// a sub-room inside a Domain. Tokens carry domain and tenant as two
+// independent claims; tokens for Domains that have no sub-room concept omit
+// the tenant claim entirely.
 //
 // For a service that accepts tokens from several AuthGates:
 //
@@ -40,11 +46,14 @@
 //	    []string{"https://auth-a.example.com", "https://auth-b.example.com"},
 //	    "https://api.example.com")
 //	if err != nil { log.Fatal(err) }
-//	// Optional cross-tenant defense — strongly recommended with short tenant codes:
-//	if err := mv.SetIssuerTenants("https://auth-a.example.com=oa,hwrd;https://auth-b.example.com=swrd"); err != nil {
+//	// Optional cross-domain defense — strongly recommended with short
+//	// domain codes. Tenants live entirely inside a Domain and are not part
+//	// of cross-issuer pinning.
+//	if err := mv.SetIssuerDomains("https://auth-a.example.com=oa,hwrd;https://auth-b.example.com=swrd"); err != nil {
 //	    log.Fatal(err)
 //	}
 //	mux.Handle("/api/admin", jwksauth.Middleware(mv, jwksauth.AccessRule{
+//	    Domains:         []string{"oa"},
 //	    ServiceAccounts: []string{"sync-bot@oa.local"},
 //	    Projects:        []string{"admin-tools"},
 //	})(adminHandler))

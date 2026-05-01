@@ -7,16 +7,18 @@ import (
 )
 
 // AccessRule is a per-route policy: the OAuth scopes the caller must hold
-// plus optional allowlists for the tenant / service_account / project
-// claims AuthGate may emit.
+// plus optional allowlists for the domain / service_account / project
+// claims AuthGate may emit. Filtering on the optional sub-room Tenant claim
+// is intentionally out of scope at the rule level — Domains are the
+// allowlist dimension.
 //
 // Semantics:
 //   - An empty slice means "this dimension is not checked".
 //   - A populated slice is fail-closed: the token's value must appear in
 //     the slice (a missing claim is treated as not-in-allowlist).
-//   - Tenants is matched case-insensitively. Callers may supply values in
+//   - Domains is matched case-insensitively. Callers may supply values in
 //     any case; [Middleware] canonicalizes the rule on construction by
-//     lower-casing tenant allowlist entries.
+//     lower-casing domain allowlist entries.
 //   - ServiceAccounts and Projects are matched exactly (case-sensitive).
 //
 // Construct rules per-route, not globally — different endpoints typically
@@ -27,8 +29,8 @@ type AccessRule struct {
 	// client knows what to request next time.
 	Scopes []string
 
-	// Tenants is the allowlist of tenant codes (case-insensitive).
-	Tenants []string
+	// Domains is the allowlist of domain codes (case-insensitive).
+	Domains []string
 
 	// ServiceAccounts is the allowlist of service-account identifiers
 	// (case-sensitive, exact match).
@@ -47,12 +49,12 @@ type AccessRule struct {
 // whose claim is missing/empty pass the allowlist, silently breaking the
 // documented fail-closed semantics for missing claims.
 //
-// Tenants are additionally lower-cased so [AccessRule.Tenants] comparisons
+// Domains are additionally lower-cased so [AccessRule.Domains] comparisons
 // are case-insensitive at the rule side.
 func (r AccessRule) canonical() AccessRule {
 	out := AccessRule{
 		Scopes:          trimNonEmpty(r.Scopes, false),
-		Tenants:         trimNonEmpty(r.Tenants, true),
+		Domains:         trimNonEmpty(r.Domains, true),
 		ServiceAccounts: trimNonEmpty(r.ServiceAccounts, false),
 		Projects:        trimNonEmpty(r.Projects, false),
 	}
@@ -81,8 +83,8 @@ func trimNonEmpty(in []string, lower bool) []string {
 // reason on failure. Scope checks live in [Middleware] proper because
 // they need to advertise the missing scope on the WWW-Authenticate header.
 func (r AccessRule) checkClaims(info *TokenInfo) (reason string, ok bool) {
-	if len(r.Tenants) > 0 && !slices.Contains(r.Tenants, info.Tenant()) {
-		return fmt.Sprintf("tenant=%q not in allowlist", info.Claims.Tenant), false
+	if len(r.Domains) > 0 && !slices.Contains(r.Domains, info.Domain()) {
+		return fmt.Sprintf("domain=%q not in allowlist", info.Claims.Domain), false
 	}
 	if len(r.ServiceAccounts) > 0 &&
 		!slices.Contains(r.ServiceAccounts, info.Claims.ServiceAccount) {

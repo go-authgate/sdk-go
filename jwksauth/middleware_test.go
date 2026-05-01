@@ -116,7 +116,8 @@ func TestVerifier_HappyPath(t *testing.T) {
 	tok := fi.Sign(t, "api://example", 5*time.Minute, map[string]any{
 		"client_id":       "cli",
 		"scope":           "email profile",
-		"tenant":          "OA",
+		"domain":          "OA",
+		"tenant":          "A76",
 		"service_account": "sync@oa",
 		"project":         "p1",
 	})
@@ -130,8 +131,11 @@ func TestVerifier_HappyPath(t *testing.T) {
 	if !info.HasScope("email") || !info.HasScope("profile") {
 		t.Errorf("scopes = %v", info.Scopes)
 	}
-	if info.Tenant() != "oa" {
-		t.Errorf("Tenant() = %q, want lower-cased 'oa'", info.Tenant())
+	if info.Domain() != "oa" {
+		t.Errorf("Domain() = %q, want lower-cased 'oa'", info.Domain())
+	}
+	if info.Tenant() != "a76" {
+		t.Errorf("Tenant() = %q, want lower-cased 'a76'", info.Tenant())
 	}
 }
 
@@ -283,7 +287,7 @@ func TestMiddleware_InsufficientScope(t *testing.T) {
 	}
 }
 
-func TestMiddleware_TenantAllowlist(t *testing.T) {
+func TestMiddleware_DomainAllowlist(t *testing.T) {
 	fi := newFakeIssuer(t)
 	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
 	if err != nil {
@@ -291,7 +295,7 @@ func TestMiddleware_TenantAllowlist(t *testing.T) {
 	}
 	tests := []struct {
 		name     string
-		tenant   string
+		domain   string
 		rule     []string
 		wantCode int
 	}{
@@ -302,8 +306,8 @@ func TestMiddleware_TenantAllowlist(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"tenant": tc.tenant})
-			rec := runMiddleware(t, v, AccessRule{Tenants: tc.rule}, func(req *http.Request) {
+			tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"domain": tc.domain})
+			rec := runMiddleware(t, v, AccessRule{Domains: tc.rule}, func(req *http.Request) {
 				req.Header.Set("Authorization", "Bearer "+tok)
 			})
 			if rec.Code != tc.wantCode {
@@ -321,20 +325,30 @@ func TestMiddleware_HappyPath_InjectsContext(t *testing.T) {
 	}
 	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{
 		"scope":  "email",
-		"tenant": "OA",
+		"domain": "OA",
+		"tenant": "A76",
 	})
 	called := false
 	handler := Middleware(v, AccessRule{
 		Scopes:  []string{"email"},
-		Tenants: []string{"oa"},
+		Domains: []string{"oa"},
 	})(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		info, ok := TokenInfoFromContext(r.Context())
 		if !ok {
 			t.Error("TokenInfoFromContext returned !ok")
 			return
 		}
-		if info.Tenant() != "oa" {
-			t.Errorf("Tenant = %q, want oa", info.Tenant())
+		if info.Domain() != "oa" {
+			t.Errorf("Domain = %q, want oa", info.Domain())
+		}
+		if info.Tenant() != "a76" {
+			t.Errorf("Tenant = %q, want a76", info.Tenant())
+		}
+		if info.Claims.Domain != "OA" {
+			t.Errorf("Claims.Domain = %q, want OA", info.Claims.Domain)
+		}
+		if info.Claims.Tenant != "A76" {
+			t.Errorf("Claims.Tenant = %q, want A76", info.Claims.Tenant)
 		}
 		called = true
 	}))
@@ -351,6 +365,70 @@ func TestMiddleware_HappyPath_InjectsContext(t *testing.T) {
 	}
 }
 
+// TestMiddleware_DomainPresent_TenantAbsent pins the contract that a token
+// carrying a Domain but no Tenant claim is accepted when the Domain is in
+// the allowlist; the handler observes Tenant() == "".
+func TestMiddleware_DomainPresent_TenantAbsent(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
+	called := false
+	handler := Middleware(v, AccessRule{
+		Domains: []string{"oa"},
+	})(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		info, ok := TokenInfoFromContext(r.Context())
+		if !ok {
+			t.Error("TokenInfoFromContext returned !ok")
+			return
+		}
+		if info.Claims.Tenant != "" {
+			t.Errorf("Claims.Tenant = %q, want empty (no sub-room)", info.Claims.Tenant)
+		}
+		if info.Tenant() != "" {
+			t.Errorf("Tenant() = %q, want empty", info.Tenant())
+		}
+		called = true
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Error("inner handler was not called")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestMiddleware_AcceptsTokenWithNoCustomClaims pins the contract that
+// the SDK verifies any AuthGate-issued token regardless of which custom
+// claims it carries. AuthGate today emits the standard claims (iss, sub,
+// aud, exp, nbf, scope) plus optional service_account and project; the
+// Domain and Tenant fields on Claims are forward-looking and remain
+// empty until the server starts populating them. With AccessRule{} (no
+// allowlists) and no SetIssuerDomains enforcement, only signature, iss,
+// aud, exp, and nbf are checked — guaranteeing the SDK works regardless
+// of whether the server emits any custom claims at all.
+func TestMiddleware_AcceptsTokenWithNoCustomClaims(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, nil)
+	rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	})
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
 func TestMultiVerifier_RoutesByIssuer(t *testing.T) {
 	a := newFakeIssuer(t)
 	b := newFakeIssuer(t)
@@ -359,7 +437,7 @@ func TestMultiVerifier_RoutesByIssuer(t *testing.T) {
 		t.Fatalf("NewMultiVerifier: %v", err)
 	}
 
-	tokA := a.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "oa"})
+	tokA := a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
 	infoA, err := mv.Verify(context.Background(), tokA)
 	if err != nil {
 		t.Fatalf("Verify A: %v", err)
@@ -368,7 +446,7 @@ func TestMultiVerifier_RoutesByIssuer(t *testing.T) {
 		t.Errorf("issuer = %q, want %q", infoA.Issuer, a.URL())
 	}
 
-	tokB := b.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "swrd"})
+	tokB := b.Sign(t, "api://x", time.Minute, map[string]any{"domain": "swrd"})
 	infoB, err := mv.Verify(context.Background(), tokB)
 	if err != nil {
 		t.Fatalf("Verify B: %v", err)
@@ -393,46 +471,46 @@ func TestMultiVerifier_RejectsUntrustedIssuer(t *testing.T) {
 	}
 }
 
-func TestMultiVerifier_CrossTenantDefense(t *testing.T) {
+func TestMultiVerifier_CrossDomainDefense(t *testing.T) {
 	a := newFakeIssuer(t)
 	b := newFakeIssuer(t)
 	mv, err := NewMultiVerifier(t.Context(), []string{a.URL(), b.URL()}, "api://x")
 	if err != nil {
 		t.Fatalf("NewMultiVerifier: %v", err)
 	}
-	if err := mv.SetIssuerTenants(fmt.Sprintf("%s=oa;%s=swrd", a.URL(), b.URL())); err != nil {
-		t.Fatalf("SetIssuerTenants: %v", err)
+	if err := mv.SetIssuerDomains(fmt.Sprintf("%s=oa;%s=swrd", a.URL(), b.URL())); err != nil {
+		t.Fatalf("SetIssuerDomains: %v", err)
 	}
 
-	// Issuer A claims tenant 'swrd' (which belongs to B) → reject. The
+	// Issuer A claims domain 'swrd' (which belongs to B) → reject. The
 	// error must not echo back the configured allowlist for this issuer.
-	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "swrd"})
+	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "swrd"})
 	_, rejErr := mv.Verify(context.Background(), tok)
 	if rejErr == nil {
-		t.Fatal("expected cross-tenant rejection")
+		t.Fatal("expected cross-domain rejection")
 	}
 	if strings.Contains(rejErr.Error(), "[oa]") || strings.Contains(rejErr.Error(), "allowed=") {
 		t.Errorf("error leaks the allowlist: %v", rejErr)
 	}
 
-	// Same issuer, its own tenant → accept.
-	tok = a.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "oa"})
+	// Same issuer, its own domain → accept.
+	tok = a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
 	if _, err := mv.Verify(context.Background(), tok); err != nil {
 		t.Fatalf("legit token rejected: %v", err)
 	}
 }
 
-// TestMultiVerifier_SetIssuerTenantsRace exercises the documented contract
-// that SetIssuerTenants is safe to call concurrently with Verify (the swap
+// TestMultiVerifier_SetIssuerDomainsRace exercises the documented contract
+// that SetIssuerDomains is safe to call concurrently with Verify (the swap
 // is atomic). Run with `go test -race ./jwksauth/`.
-func TestMultiVerifier_SetIssuerTenantsRace(t *testing.T) {
+func TestMultiVerifier_SetIssuerDomainsRace(t *testing.T) {
 	a := newFakeIssuer(t)
 	b := newFakeIssuer(t)
 	mv, err := NewMultiVerifier(t.Context(), []string{a.URL(), b.URL()}, "api://x")
 	if err != nil {
 		t.Fatalf("NewMultiVerifier: %v", err)
 	}
-	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"tenant": "oa"})
+	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
 
 	stop := make(chan struct{})
 	done := make(chan struct{}, 2)
@@ -452,9 +530,9 @@ func TestMultiVerifier_SetIssuerTenantsRace(t *testing.T) {
 		cfg := fmt.Sprintf("%s=oa;%s=swrd", a.URL(), b.URL())
 		for i := range 50 {
 			if i%2 == 0 {
-				_ = mv.SetIssuerTenants(cfg)
+				_ = mv.SetIssuerDomains(cfg)
 			} else {
-				_ = mv.SetIssuerTenants("")
+				_ = mv.SetIssuerDomains("")
 			}
 		}
 	}()
