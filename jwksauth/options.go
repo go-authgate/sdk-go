@@ -82,10 +82,18 @@ func WithDiscoveryTimeout(d time.Duration) Option {
 // yields empty fields and (when AccessRule covers those dimensions)
 // fails closed.
 //
-// Surrounding whitespace is trimmed; an empty or whitespace-only string is
-// treated as "use the default" (consistent with [WithVerifyTimeout]'s
-// zero-input handling). Format errors are returned from [NewVerifier] /
-// [NewMultiVerifier], never silently ignored.
+// For [NewMultiVerifier] this prefix is shared across every configured
+// issuer: the resolved server-attested key set is cached once at
+// construction time. If your fleet runs multiple issuers with different
+// JWT_PRIVATE_CLAIM_PREFIX values, build one [Verifier] per prefix and
+// dispatch yourself rather than passing them to a single MultiVerifier.
+//
+// Surrounding whitespace is trimmed. Empty or whitespace-only input is a
+// no-op: the option leaves the previously-configured prefix in place
+// (which is the default unless an earlier WithPrivateClaimPrefix call
+// set it) — it does NOT explicitly reset to the default. Format errors
+// are returned from [NewVerifier] / [NewMultiVerifier], never silently
+// ignored.
 func WithPrivateClaimPrefix(p string) Option {
 	return optionFunc(func(c *verifierConfig) {
 		if trimmed := strings.TrimSpace(p); trimmed != "" {
