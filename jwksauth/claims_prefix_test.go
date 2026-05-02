@@ -274,3 +274,52 @@ func TestNewVerifier_RejectsInvalidPrefix(t *testing.T) {
 		}
 	})
 }
+
+// WithPrivateClaimPrefix trims surrounding whitespace before validation so
+// values sourced from env/config don't trip the format check, and treats
+// whitespace-only input the same as empty (use default).
+func TestWithPrivateClaimPrefix_TrimsWhitespace(t *testing.T) {
+	fi := newFakeIssuer(t)
+
+	t.Run("trimmed_prefix_decodes", func(t *testing.T) {
+		v, err := NewVerifier(
+			t.Context(), fi.URL(), "api://x",
+			WithPrivateClaimPrefix("  acme  "),
+		)
+		if err != nil {
+			t.Fatalf("NewVerifier: %v", err)
+		}
+		tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"acme_domain": "oa"})
+		info, err := v.Verify(t.Context(), tok)
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		if info.Claims.Domain != "oa" {
+			t.Errorf(
+				"Claims.Domain = %q, want oa (trimmed prefix should resolve to acme)",
+				info.Claims.Domain,
+			)
+		}
+	})
+
+	t.Run("whitespace_only_uses_default", func(t *testing.T) {
+		v, err := NewVerifier(
+			t.Context(), fi.URL(), "api://x",
+			WithPrivateClaimPrefix("   "),
+		)
+		if err != nil {
+			t.Fatalf("NewVerifier: %v", err)
+		}
+		tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "oa"})
+		info, err := v.Verify(t.Context(), tok)
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		if info.Claims.Domain != "oa" {
+			t.Errorf(
+				"Claims.Domain = %q, want oa (whitespace-only should fall back to default \"extra\")",
+				info.Claims.Domain,
+			)
+		}
+	})
+}

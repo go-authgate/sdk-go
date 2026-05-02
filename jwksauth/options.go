@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -81,13 +82,14 @@ func WithDiscoveryTimeout(d time.Duration) Option {
 // yields empty fields and (when AccessRule covers those dimensions)
 // fails closed.
 //
-// An empty string is treated as "use the default" (consistent with
-// [WithVerifyTimeout]'s zero-input handling). Format errors are returned
-// from [NewVerifier] / [NewMultiVerifier], never silently ignored.
+// Surrounding whitespace is trimmed; an empty or whitespace-only string is
+// treated as "use the default" (consistent with [WithVerifyTimeout]'s
+// zero-input handling). Format errors are returned from [NewVerifier] /
+// [NewMultiVerifier], never silently ignored.
 func WithPrivateClaimPrefix(p string) Option {
 	return optionFunc(func(c *verifierConfig) {
-		if p != "" {
-			c.privateClaimPrefix = p
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			c.privateClaimPrefix = trimmed
 		}
 	})
 }
