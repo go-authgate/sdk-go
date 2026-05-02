@@ -175,12 +175,17 @@ func TestPrefixedClaims_CallerSuppliedKeysDoNotPromote(t *testing.T) {
 		t.Fatalf("Verify: %v", err)
 	}
 	got, ok := info.Extra("foo")
-	if !ok || got.(string) != "baz" {
-		t.Errorf("Extra(\"foo\") = (%v, %v), want (\"baz\", true)", got, ok)
+	if s, isStr := got.(string); !ok || !isStr || s != "baz" {
+		t.Errorf("Extra(\"foo\") = %v (%T), ok=%v; want \"baz\" (string), ok=true", got, got, ok)
 	}
 	got, ok = info.Extra("extra_foo")
-	if !ok || got.(string) != "bar" {
-		t.Errorf("Extra(\"extra_foo\") = (%v, %v), want (\"bar\", true)", got, ok)
+	if s, isStr := got.(string); !ok || !isStr || s != "bar" {
+		t.Errorf(
+			"Extra(\"extra_foo\") = %v (%T), ok=%v; want \"bar\" (string), ok=true",
+			got,
+			got,
+			ok,
+		)
 	}
 	if info.Claims.Domain != "" || info.Claims.Project != "" || info.Claims.ServiceAccount != "" {
 		t.Errorf(

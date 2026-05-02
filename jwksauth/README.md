@@ -62,10 +62,12 @@ func profile(w http.ResponseWriter, r *http.Request) {
 
 ## Server-attested private claims and the prefix
 
-AuthGate emits three private claims on every token: **Domain**, **Project**,
-**ServiceAccount**. They appear in the payload under a configurable prefix
-(default `extra`), so the JWT keys are `extra_domain`, `extra_project`,
-`extra_service_account`. The SDK reads them out of the box.
+AuthGate may emit up to three private claims on a token: **Domain**,
+**Project**, **ServiceAccount**. Each is optional — tokens that don't
+need a given dimension simply omit the claim. When present they appear
+in the payload under a configurable prefix (default `extra`), so the
+JWT keys are `extra_domain`, `extra_project`, `extra_service_account`.
+The SDK reads them out of the box.
 
 ```json
 {

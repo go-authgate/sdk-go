@@ -15,6 +15,11 @@ import (
 // configure the JWT payload prefix via [WithPrivateClaimPrefix]. Extras
 // carries every other non-standard key — read individual values with
 // [TokenInfo.Extra].
+//
+// Claims is populated by the SDK's verifier from a verified IDToken; it
+// is not intended for direct JSON marshal/unmarshal by callers and
+// therefore carries no json tags. If you need the raw payload, use the
+// embedded [oidc.IDToken] on [TokenInfo].
 type Claims struct {
 	ClientID       string
 	Scope          string

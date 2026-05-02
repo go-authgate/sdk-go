@@ -134,8 +134,11 @@ func TestVerifier_HappyPath(t *testing.T) {
 	if info.Domain() != "oa" {
 		t.Errorf("Domain() = %q, want lower-cased 'oa'", info.Domain())
 	}
-	if got, ok := info.Extra("tenant"); !ok || got.(string) != "A76" {
-		t.Errorf("Extra(\"tenant\") = (%v, %v), want (\"A76\", true)", got, ok)
+	got, ok := info.Extra("tenant")
+	if !ok {
+		t.Errorf("Extra(\"tenant\") missing, want \"A76\"")
+	} else if s, isStr := got.(string); !isStr || s != "A76" {
+		t.Errorf("Extra(\"tenant\") = %v (%T), want \"A76\" (string)", got, got)
 	}
 }
 
@@ -341,8 +344,11 @@ func TestMiddleware_HappyPath_InjectsContext(t *testing.T) {
 		if info.Domain() != "oa" {
 			t.Errorf("Domain = %q, want oa", info.Domain())
 		}
-		if got, ok := info.Extra("tenant"); !ok || got.(string) != "A76" {
-			t.Errorf("Extra(\"tenant\") = (%v, %v), want (\"A76\", true)", got, ok)
+		got, ok := info.Extra("tenant")
+		if !ok {
+			t.Errorf("Extra(\"tenant\") missing, want \"A76\"")
+		} else if s, isStr := got.(string); !isStr || s != "A76" {
+			t.Errorf("Extra(\"tenant\") = %v (%T), want \"A76\" (string)", got, got)
 		}
 		if info.Claims.Domain != "OA" {
 			t.Errorf("Claims.Domain = %q, want OA", info.Claims.Domain)
