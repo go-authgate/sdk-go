@@ -371,7 +371,8 @@ func TestMiddleware_HappyPath_InjectsContext(t *testing.T) {
 // TestMiddleware_DomainPresent_NoExtras pins the contract that a token
 // carrying only the server-attested Domain (and no caller-supplied keys)
 // is accepted when the Domain is in the allowlist; the handler observes
-// an empty Extras map.
+// a nil Claims.Extras map (newTokenInfo only allocates the map when at
+// least one non-reserved key is present).
 func TestMiddleware_DomainPresent_NoExtras(t *testing.T) {
 	fi := newFakeIssuer(t)
 	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
@@ -390,6 +391,9 @@ func TestMiddleware_DomainPresent_NoExtras(t *testing.T) {
 		}
 		if _, ok := info.Extra("tenant"); ok {
 			t.Errorf("Extra(\"tenant\") = ok, want absent")
+		}
+		if info.Claims.Extras != nil {
+			t.Errorf("Claims.Extras = %v, want nil", info.Claims.Extras)
 		}
 		called = true
 	}))

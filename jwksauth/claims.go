@@ -31,8 +31,12 @@ type Claims struct {
 	ServiceAccount string
 	Project        string
 
-	// Extras carries any payload keys that are neither JWT/OIDC standard
-	// claims nor the three server-attested "<prefix>_..." keys. Values are
+	// Extras carries any payload keys that are neither in the SDK's
+	// reserved-key set (see [staticReservedClaimKeys]) nor the three
+	// server-attested "<prefix>_..." keys. The reserved set covers RFC
+	// 7519 standard JWT keys and a hand-picked subset of OIDC keys, so
+	// common OIDC keys the SDK does not name explicitly (e.g. email,
+	// name) will surface here when the issuer emits them. Values are
 	// taken from the decoded JSON map by reference; callers should treat
 	// them as read-only.
 	Extras map[string]any
