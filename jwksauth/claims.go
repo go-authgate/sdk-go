@@ -75,10 +75,18 @@ func (t *TokenInfo) Extra(key string) (any, bool) {
 	return v, ok
 }
 
-// staticReservedClaimKeys mirrors upstream AuthGate's registry of standard
-// JWT/OIDC claim keys that are never surfaced via Claims.Extras. The three
-// server-attested keys are excluded dynamically by newTokenInfo via the
-// resolved [claimKeys].
+// staticReservedClaimKeys is the set of payload keys this SDK
+// intentionally excludes from Claims.Extras. It mirrors upstream
+// AuthGate's reserved set, which mixes RFC 7519 standard JWT keys
+// (iss, sub, aud, exp, nbf, iat, jti), a subset of OIDC keys (azp, amr,
+// acr, auth_time, nonce, at_hash), and AuthGate-specific keys exposed
+// as named [Claims] fields (scope, client_id) plus a few other
+// AuthGate-emitted keys (type, user_id). It is NOT the full IANA OIDC
+// claim registry — common OIDC claims the SDK does not name explicitly
+// (e.g. email, name) will surface via Extras when the issuer emits them.
+//
+// The three server-attested keys are excluded dynamically by
+// newTokenInfo via the resolved [claimKeys].
 var staticReservedClaimKeys = map[string]struct{}{
 	"iss": {}, "sub": {}, "aud": {}, "exp": {}, "nbf": {}, "iat": {}, "jti": {},
 	"type": {}, "scope": {}, "user_id": {}, "client_id": {},

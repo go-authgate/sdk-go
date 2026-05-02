@@ -162,10 +162,14 @@ prefix (`extra`); under a custom prefix the keys become
 | `ServiceAccounts` | `extra_service_account` | exact     | Case-sensitive                                                                  |
 | `Projects`        | `extra_project`         | exact     | Case-sensitive                                                                  |
 
-Caller-supplied keys (anything else in the JWT payload that isn't a JWT/OIDC
-standard claim) are not part of the allowlist surface. Read them from
-`Claims.Extras` via `TokenInfo.Extra(key)` and apply your own logic in the
-handler when needed.
+Caller-supplied keys (any payload key not in the SDK's reserved-key set
+and not one of the three server-attested `<prefix>_domain` /
+`<prefix>_project` / `<prefix>_service_account` keys) are not part of the
+allowlist surface. They surface on `Claims.Extras`; read individual values
+with `TokenInfo.Extra(key)` and apply your own logic in the handler when
+needed. Note that OIDC standard claims the SDK does not name explicitly
+(for example `email`, `name`) will also land in Extras if the issuer
+emits them.
 
 Allowlist mismatches return `401 invalid_token` (generic) so the allowlist
 itself is not probeable. The full reason is logged server-side via the
