@@ -16,10 +16,14 @@ import (
 // carries every other non-standard key — read individual values with
 // [TokenInfo.Extra].
 //
-// Claims is populated by the SDK's verifier from a verified IDToken; it
-// is not intended for direct JSON marshal/unmarshal by callers and
-// therefore carries no json tags. If you need the raw payload, use the
-// embedded [oidc.IDToken] on [TokenInfo].
+// Claims is populated by the SDK's verifier from a verified IDToken via
+// custom decoding (not via struct-tag JSON unmarshal), so it deliberately
+// carries no json tags — that keeps the struct from advertising payload
+// keys that no longer match the prefixed wire format. As a side effect,
+// passing a [Claims] value to encoding/json will marshal exported fields
+// under their Go names ("ClientID", "Domain", ...) rather than the
+// snake_case JWT keys; if you need the raw payload, read it from the
+// embedded [oidc.IDToken] on [TokenInfo] instead.
 type Claims struct {
 	ClientID       string
 	Scope          string

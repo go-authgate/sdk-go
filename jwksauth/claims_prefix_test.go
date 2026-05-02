@@ -58,7 +58,7 @@ func TestPrefixedClaims_DefaultPrefix_HappyPath(t *testing.T) {
 	}
 }
 
-// With WithPrivateClaimPrefix("acme") the SDK reads "acme_domain" only;
+// WithPrivateClaimPrefix("acme") makes the SDK read "acme_domain" only;
 // hard cutover means a token signed with "extra_domain" against an
 // "acme"-configured verifier yields empty Domain and is rejected by
 // AccessRule (no fallback to bare or default keys).
