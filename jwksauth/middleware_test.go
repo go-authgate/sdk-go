@@ -114,12 +114,12 @@ func TestVerifier_HappyPath(t *testing.T) {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	tok := fi.Sign(t, "api://example", 5*time.Minute, map[string]any{
-		"client_id":       "cli",
-		"scope":           "email profile",
-		"domain":          "OA",
-		"tenant":          "A76",
-		"service_account": "sync@oa",
-		"project":         "p1",
+		"client_id":             "cli",
+		"scope":                 "email profile",
+		"extra_domain":          "OA",
+		"tenant":                "A76",
+		"extra_service_account": "sync@oa",
+		"extra_project":         "p1",
 	})
 	info, err := v.Verify(context.Background(), tok)
 	if err != nil {
@@ -134,8 +134,8 @@ func TestVerifier_HappyPath(t *testing.T) {
 	if info.Domain() != "oa" {
 		t.Errorf("Domain() = %q, want lower-cased 'oa'", info.Domain())
 	}
-	if info.Tenant() != "a76" {
-		t.Errorf("Tenant() = %q, want lower-cased 'a76'", info.Tenant())
+	if got, ok := info.Extra("tenant"); !ok || got.(string) != "A76" {
+		t.Errorf("Extra(\"tenant\") = (%v, %v), want (\"A76\", true)", got, ok)
 	}
 }
 
@@ -306,7 +306,7 @@ func TestMiddleware_DomainAllowlist(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"domain": tc.domain})
+			tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": tc.domain})
 			rec := runMiddleware(t, v, AccessRule{Domains: tc.rule}, func(req *http.Request) {
 				req.Header.Set("Authorization", "Bearer "+tok)
 			})
@@ -324,9 +324,9 @@ func TestMiddleware_HappyPath_InjectsContext(t *testing.T) {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{
-		"scope":  "email",
-		"domain": "OA",
-		"tenant": "A76",
+		"scope":        "email",
+		"extra_domain": "OA",
+		"tenant":       "A76",
 	})
 	called := false
 	handler := Middleware(v, AccessRule{
@@ -341,14 +341,11 @@ func TestMiddleware_HappyPath_InjectsContext(t *testing.T) {
 		if info.Domain() != "oa" {
 			t.Errorf("Domain = %q, want oa", info.Domain())
 		}
-		if info.Tenant() != "a76" {
-			t.Errorf("Tenant = %q, want a76", info.Tenant())
+		if got, ok := info.Extra("tenant"); !ok || got.(string) != "A76" {
+			t.Errorf("Extra(\"tenant\") = (%v, %v), want (\"A76\", true)", got, ok)
 		}
 		if info.Claims.Domain != "OA" {
 			t.Errorf("Claims.Domain = %q, want OA", info.Claims.Domain)
-		}
-		if info.Claims.Tenant != "A76" {
-			t.Errorf("Claims.Tenant = %q, want A76", info.Claims.Tenant)
 		}
 		called = true
 	}))
@@ -365,16 +362,17 @@ func TestMiddleware_HappyPath_InjectsContext(t *testing.T) {
 	}
 }
 
-// TestMiddleware_DomainPresent_TenantAbsent pins the contract that a token
-// carrying a Domain but no Tenant claim is accepted when the Domain is in
-// the allowlist; the handler observes Tenant() == "".
-func TestMiddleware_DomainPresent_TenantAbsent(t *testing.T) {
+// TestMiddleware_DomainPresent_NoExtras pins the contract that a token
+// carrying only the server-attested Domain (and no caller-supplied keys)
+// is accepted when the Domain is in the allowlist; the handler observes
+// an empty Extras map.
+func TestMiddleware_DomainPresent_NoExtras(t *testing.T) {
 	fi := newFakeIssuer(t)
 	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "oa"})
 	called := false
 	handler := Middleware(v, AccessRule{
 		Domains: []string{"oa"},
@@ -384,11 +382,8 @@ func TestMiddleware_DomainPresent_TenantAbsent(t *testing.T) {
 			t.Error("TokenInfoFromContext returned !ok")
 			return
 		}
-		if info.Claims.Tenant != "" {
-			t.Errorf("Claims.Tenant = %q, want empty (no sub-room)", info.Claims.Tenant)
-		}
-		if info.Tenant() != "" {
-			t.Errorf("Tenant() = %q, want empty", info.Tenant())
+		if _, ok := info.Extra("tenant"); ok {
+			t.Errorf("Extra(\"tenant\") = ok, want absent")
 		}
 		called = true
 	}))
@@ -407,13 +402,10 @@ func TestMiddleware_DomainPresent_TenantAbsent(t *testing.T) {
 
 // TestMiddleware_AcceptsTokenWithNoCustomClaims pins the contract that
 // the SDK verifies any AuthGate-issued token regardless of which custom
-// claims it carries. AuthGate today emits the standard claims (iss, sub,
-// aud, exp, nbf, scope) plus optional service_account and project; the
-// Domain and Tenant fields on Claims are forward-looking and remain
-// empty until the server starts populating them. With AccessRule{} (no
-// allowlists) and no SetIssuerDomains enforcement, only signature, iss,
-// aud, exp, and nbf are checked — guaranteeing the SDK works regardless
-// of whether the server emits any custom claims at all.
+// claims it carries. With AccessRule{} (no allowlists) and no
+// SetIssuerDomains enforcement, only signature, iss, aud, exp, and nbf
+// are checked — guaranteeing the SDK works regardless of whether the
+// server emits any private claims at all.
 func TestMiddleware_AcceptsTokenWithNoCustomClaims(t *testing.T) {
 	fi := newFakeIssuer(t)
 	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
@@ -437,7 +429,7 @@ func TestMultiVerifier_RoutesByIssuer(t *testing.T) {
 		t.Fatalf("NewMultiVerifier: %v", err)
 	}
 
-	tokA := a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
+	tokA := a.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "oa"})
 	infoA, err := mv.Verify(context.Background(), tokA)
 	if err != nil {
 		t.Fatalf("Verify A: %v", err)
@@ -446,7 +438,7 @@ func TestMultiVerifier_RoutesByIssuer(t *testing.T) {
 		t.Errorf("issuer = %q, want %q", infoA.Issuer, a.URL())
 	}
 
-	tokB := b.Sign(t, "api://x", time.Minute, map[string]any{"domain": "swrd"})
+	tokB := b.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "swrd"})
 	infoB, err := mv.Verify(context.Background(), tokB)
 	if err != nil {
 		t.Fatalf("Verify B: %v", err)
@@ -484,7 +476,7 @@ func TestMultiVerifier_CrossDomainDefense(t *testing.T) {
 
 	// Issuer A claims domain 'swrd' (which belongs to B) → reject. The
 	// error must not echo back the configured allowlist for this issuer.
-	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "swrd"})
+	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "swrd"})
 	_, rejErr := mv.Verify(context.Background(), tok)
 	if rejErr == nil {
 		t.Fatal("expected cross-domain rejection")
@@ -494,7 +486,7 @@ func TestMultiVerifier_CrossDomainDefense(t *testing.T) {
 	}
 
 	// Same issuer, its own domain → accept.
-	tok = a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
+	tok = a.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "oa"})
 	if _, err := mv.Verify(context.Background(), tok); err != nil {
 		t.Fatalf("legit token rejected: %v", err)
 	}
@@ -510,7 +502,7 @@ func TestMultiVerifier_SetIssuerDomainsRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMultiVerifier: %v", err)
 	}
-	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"domain": "oa"})
+	tok := a.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "oa"})
 
 	stop := make(chan struct{})
 	done := make(chan struct{}, 2)
@@ -694,7 +686,7 @@ func TestMiddleware_LogsPolicyReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"domain": "swrd"})
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "swrd"})
 
 	cl := &captureLogger{}
 	rec := runMiddleware(t, v, AccessRule{Domains: []string{"oa"}}, func(req *http.Request) {

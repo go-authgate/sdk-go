@@ -37,6 +37,10 @@ type Verifier struct {
 	canonicalIssuer string
 
 	timeout time.Duration
+
+	// keys are the resolved server-attested payload keys; see
+	// [WithPrivateClaimPrefix].
+	keys claimKeys
 }
 
 // NewVerifier builds a single-issuer Verifier that requires the `aud`
@@ -90,6 +94,9 @@ func newVerifier(
 			o.apply(&cfg)
 		}
 	}
+	if err := validatePrivateClaimPrefix(cfg.privateClaimPrefix); err != nil {
+		return nil, fmt.Errorf("jwksauth: invalid private claim prefix: %w", err)
+	}
 
 	discoverCtx, cancel := context.WithTimeout(ctx, cfg.discoveryTimeout)
 	defer cancel()
@@ -102,6 +109,7 @@ func newVerifier(
 		verifier:        oidcVerifier,
 		canonicalIssuer: canonical,
 		timeout:         cfg.verifyTimeout,
+		keys:            newClaimKeys(cfg.privateClaimPrefix),
 	}, nil
 }
 
@@ -155,5 +163,5 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*TokenInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newTokenInfo(tok)
+	return newTokenInfo(tok, v.keys)
 }

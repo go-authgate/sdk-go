@@ -32,13 +32,21 @@
 //	mux.Handle("/api/profile", jwksauth.Middleware(v, jwksauth.AccessRule{})(profileHandler))
 //	mux.Handle("/api/data",    jwksauth.Middleware(v, jwksauth.AccessRule{Scopes: []string{"email"}})(dataHandler))
 //
-// # Multiple issuers (multi-region / multi-domain / migration)
+// # Server-attested private claims and the prefix
 //
-// AuthGate's hierarchy is two-level: a Domain (e.g. "oa", "swrd", "hwrd") is
-// the top-level partition, and an optional Tenant (e.g. "a76", "a78") names
-// a sub-room inside a Domain. Tokens carry domain and tenant as two
-// independent claims; tokens for Domains that have no sub-room concept omit
-// the tenant claim entirely.
+// AuthGate emits three private claims — Domain, Project, and ServiceAccount
+// — under a configurable prefix (default "extra"), so the JWT payload keys
+// are "extra_domain", "extra_project", and "extra_service_account". The
+// SDK reads them out of the box; if your AuthGate deployment has overridden
+// JWT_PRIVATE_CLAIM_PREFIX, pass the same value via
+// [WithPrivateClaimPrefix].
+//
+// Any other non-standard payload keys (for example a caller-supplied
+// "tenant") are surfaced via [Claims.Extras]; read them with
+// [TokenInfo.Extra]. Caller-supplied keys are not part of [AccessRule] or
+// the cross-issuer Domain pinning.
+//
+// # Multiple issuers (multi-region / multi-domain / migration)
 //
 // For a service that accepts tokens from several AuthGates:
 //
@@ -47,8 +55,8 @@
 //	    "https://api.example.com")
 //	if err != nil { log.Fatal(err) }
 //	// Optional cross-domain defense — strongly recommended with short
-//	// domain codes. Tenants live entirely inside a Domain and are not part
-//	// of cross-issuer pinning.
+//	// domain codes. Only Domain participates; caller-supplied claims do
+//	// not enter the cross-issuer pinning.
 //	if err := mv.SetIssuerDomains("https://auth-a.example.com=oa,hwrd;https://auth-b.example.com=swrd"); err != nil {
 //	    log.Fatal(err)
 //	}

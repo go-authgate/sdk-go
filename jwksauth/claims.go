@@ -8,25 +8,25 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
-// Claims holds the non-standard JWT claims AuthGate emits in the payload.
-// All fields are optional — services that don't use a given dimension can
-// leave the corresponding [AccessRule] slice empty and the claim is ignored.
+// Claims holds the AuthGate-specific JWT claims plus a generic Extras map
+// for any caller-supplied keys the issuer included in the payload.
 //
-// AuthGate's hierarchy is two-level: a Domain (e.g. "oa", "swrd", "hwrd") is
-// the top-level partition, and an optional Tenant (e.g. "a76", "a78") names
-// a sub-room inside a Domain. Tokens for Domains that have no sub-room
-// concept simply omit the tenant claim.
-//
-// If a deployment uses namespaced claims (e.g.
-// "https://authgate.example.com/domain"), copy this struct and adjust the
-// json tags rather than monkey-patching the SDK.
+// Domain, Project, and ServiceAccount are server-attested by AuthGate;
+// configure the JWT payload prefix via [WithPrivateClaimPrefix]. Extras
+// carries every other non-standard key — read individual values with
+// [TokenInfo.Extra].
 type Claims struct {
-	ClientID       string `json:"client_id,omitempty"`
-	Scope          string `json:"scope,omitempty"`
-	Domain         string `json:"domain,omitempty"`
-	Tenant         string `json:"tenant,omitempty"`
-	ServiceAccount string `json:"service_account,omitempty"`
-	Project        string `json:"project,omitempty"`
+	ClientID       string
+	Scope          string
+	Domain         string
+	ServiceAccount string
+	Project        string
+
+	// Extras carries any payload keys that are neither JWT/OIDC standard
+	// claims nor the three server-attested "<prefix>_..." keys. Values are
+	// taken from the decoded JSON map by reference; callers should treat
+	// them as read-only.
+	Extras map[string]any
 }
 
 // TokenInfo is the result of a successful verification. It embeds the
@@ -39,7 +39,7 @@ type Claims struct {
 type TokenInfo struct {
 	*oidc.IDToken
 
-	// Claims is the decoded set of AuthGate custom claims.
+	// Claims is the decoded set of AuthGate custom claims plus Extras.
 	Claims Claims
 
 	// Scopes is the parsed scope list (strings.Fields(Claims.Scope)) cached
@@ -58,24 +58,92 @@ func (t *TokenInfo) Domain() string {
 	return strings.ToLower(t.Claims.Domain)
 }
 
-// Tenant returns the case-folded tenant code (the optional sub-room inside a
-// Domain). Returns "" when the token has no tenant claim — that is the
-// documented "Domain has no sub-room" signal. Use t.Claims.Tenant if you
-// need the original case.
-func (t *TokenInfo) Tenant() string {
-	return strings.ToLower(t.Claims.Tenant)
+// Extra returns the value associated with key in [Claims.Extras] (comma-ok
+// style). Returns (nil, false) when the key is absent or [Claims.Extras]
+// is nil. Use this to read caller-supplied claims that the SDK does not
+// expose as a named field.
+func (t *TokenInfo) Extra(key string) (any, bool) {
+	if t.Claims.Extras == nil {
+		return nil, false
+	}
+	v, ok := t.Claims.Extras[key]
+	return v, ok
 }
 
-// newTokenInfo decodes the AuthGate-specific Claims from a verified IDToken
-// and assembles the TokenInfo struct returned by both verifiers.
-func newTokenInfo(tok *oidc.IDToken) (*TokenInfo, error) {
-	var extra Claims
-	if err := tok.Claims(&extra); err != nil {
+// staticReservedClaimKeys mirrors upstream AuthGate's registry of standard
+// JWT/OIDC claim keys that are never surfaced via Claims.Extras. The three
+// server-attested keys are excluded dynamically by newTokenInfo via the
+// resolved [claimKeys].
+var staticReservedClaimKeys = map[string]struct{}{
+	"iss": {}, "sub": {}, "aud": {}, "exp": {}, "nbf": {}, "iat": {}, "jti": {},
+	"type": {}, "scope": {}, "user_id": {}, "client_id": {},
+	"azp": {}, "amr": {}, "acr": {}, "auth_time": {}, "nonce": {}, "at_hash": {},
+}
+
+// claimKeys holds the resolved "<prefix>_<logical>" payload keys for the
+// three server-attested AuthGate claims. Construction-time once; read-only
+// on the verify hot path.
+type claimKeys struct {
+	domain         string
+	project        string
+	serviceAccount string
+}
+
+// newClaimKeys composes the three server-attested payload keys from prefix.
+// Mirrors upstream's EmittedName(prefix, logical) = prefix + "_" + logical.
+func newClaimKeys(prefix string) claimKeys {
+	return claimKeys{
+		domain:         prefix + "_domain",
+		project:        prefix + "_project",
+		serviceAccount: prefix + "_service_account",
+	}
+}
+
+// newTokenInfo decodes Claims and Extras from a verified IDToken using the
+// resolved server-attested key names.
+func newTokenInfo(tok *oidc.IDToken, keys claimKeys) (*TokenInfo, error) {
+	var raw map[string]any
+	if err := tok.Claims(&raw); err != nil {
 		return nil, fmt.Errorf("decode JWT claims: %w", err)
 	}
+
+	c := Claims{
+		ClientID:       stringFromRaw(raw, "client_id"),
+		Scope:          stringFromRaw(raw, "scope"),
+		Domain:         stringFromRaw(raw, keys.domain),
+		Project:        stringFromRaw(raw, keys.project),
+		ServiceAccount: stringFromRaw(raw, keys.serviceAccount),
+	}
+
+	for k, v := range raw {
+		if _, reserved := staticReservedClaimKeys[k]; reserved {
+			continue
+		}
+		if k == keys.domain || k == keys.project || k == keys.serviceAccount {
+			continue
+		}
+		if c.Extras == nil {
+			c.Extras = make(map[string]any)
+		}
+		c.Extras[k] = v
+	}
+
 	return &TokenInfo{
 		IDToken: tok,
-		Claims:  extra,
-		Scopes:  strings.Fields(extra.Scope),
+		Claims:  c,
+		Scopes:  strings.Fields(c.Scope),
 	}, nil
+}
+
+// stringFromRaw returns the string value of key in raw, or "" if absent or
+// not a string. JWTs are string-only at the schema level for the keys we
+// extract this way, so a non-string value is an anomalous token; the
+// fail-closed AccessRule path handles missing values uniformly.
+func stringFromRaw(raw map[string]any, key string) string {
+	if v, ok := raw[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
