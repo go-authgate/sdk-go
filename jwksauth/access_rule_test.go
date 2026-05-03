@@ -2,11 +2,10 @@ package jwksauth
 
 import "testing"
 
-func newInfo(domain, tenant, sa, project string) *TokenInfo {
+func newInfo(domain, sa, project string) *TokenInfo {
 	return &TokenInfo{
 		Claims: Claims{
 			Domain:         domain,
-			Tenant:         tenant,
 			ServiceAccount: sa,
 			Project:        project,
 		},
@@ -15,7 +14,7 @@ func newInfo(domain, tenant, sa, project string) *TokenInfo {
 
 func TestAccessRule_EmptyAllowsAll(t *testing.T) {
 	rule := AccessRule{}.canonical()
-	if reason, ok := rule.checkClaims(newInfo("", "", "", "")); !ok {
+	if reason, ok := rule.checkClaims(newInfo("", "", "")); !ok {
 		t.Errorf("empty rule should accept; reason=%q", reason)
 	}
 }
@@ -23,54 +22,56 @@ func TestAccessRule_EmptyAllowsAll(t *testing.T) {
 func TestAccessRule_DomainAllowlistCaseInsensitive(t *testing.T) {
 	rule := AccessRule{Domains: []string{"OA", "HwRd"}}.canonical()
 
-	if _, ok := rule.checkClaims(newInfo("oa", "", "", "")); !ok {
+	if _, ok := rule.checkClaims(newInfo("oa", "", "")); !ok {
 		t.Error("domain=oa should match (input was OA)")
 	}
-	if _, ok := rule.checkClaims(newInfo("HWRD", "", "", "")); !ok {
+	if _, ok := rule.checkClaims(newInfo("HWRD", "", "")); !ok {
 		t.Error("domain=HWRD should match (input was HwRd)")
 	}
-	if _, ok := rule.checkClaims(newInfo("swrd", "", "", "")); ok {
+	if _, ok := rule.checkClaims(newInfo("swrd", "", "")); ok {
 		t.Error("domain=swrd should not match")
 	}
 }
 
 func TestAccessRule_FailClosedOnMissingClaim(t *testing.T) {
 	rule := AccessRule{Domains: []string{"oa"}}.canonical()
-	if _, ok := rule.checkClaims(newInfo("", "", "", "")); ok {
+	if _, ok := rule.checkClaims(newInfo("", "", "")); ok {
 		t.Error("missing domain should be rejected when allowlist is set")
 	}
 }
 
-// TestAccessRule_TenantNotFiltered pins the contract that the optional
-// sub-room Tenant claim is intentionally not part of AccessRule. A token
-// with Domain in the allowlist passes regardless of whether it carries a
-// Tenant value.
-func TestAccessRule_TenantNotFiltered(t *testing.T) {
+// TestAccessRule_ExtrasNotFiltered pins the contract that caller-supplied
+// keys surfaced via Claims.Extras are intentionally not part of AccessRule.
+// A token with Domain in the allowlist passes regardless of which keys
+// it carries in Extras.
+func TestAccessRule_ExtrasNotFiltered(t *testing.T) {
 	rule := AccessRule{Domains: []string{"oa"}}.canonical()
-	if _, ok := rule.checkClaims(newInfo("oa", "a76", "", "")); !ok {
-		t.Error("Domain match with Tenant present should accept")
+	withExtras := newInfo("oa", "", "")
+	withExtras.Claims.Extras = map[string]any{"tenant": "a76"}
+	if _, ok := rule.checkClaims(withExtras); !ok {
+		t.Error("Domain match with Extras present should accept")
 	}
-	if _, ok := rule.checkClaims(newInfo("oa", "", "", "")); !ok {
-		t.Error("Domain match with Tenant absent should accept")
+	if _, ok := rule.checkClaims(newInfo("oa", "", "")); !ok {
+		t.Error("Domain match with Extras absent should accept")
 	}
 }
 
 func TestAccessRule_ServiceAccountExactMatch(t *testing.T) {
 	rule := AccessRule{ServiceAccounts: []string{"sync-bot@oa.local"}}.canonical()
-	if _, ok := rule.checkClaims(newInfo("", "", "sync-bot@oa.local", "")); !ok {
+	if _, ok := rule.checkClaims(newInfo("", "sync-bot@oa.local", "")); !ok {
 		t.Error("exact match should accept")
 	}
-	if _, ok := rule.checkClaims(newInfo("", "", "SYNC-BOT@OA.LOCAL", "")); ok {
+	if _, ok := rule.checkClaims(newInfo("", "SYNC-BOT@OA.LOCAL", "")); ok {
 		t.Error("ServiceAccounts must be case-sensitive")
 	}
 }
 
 func TestAccessRule_ProjectAllowlist(t *testing.T) {
 	rule := AccessRule{Projects: []string{"admin-tools"}}.canonical()
-	if _, ok := rule.checkClaims(newInfo("", "", "", "admin-tools")); !ok {
+	if _, ok := rule.checkClaims(newInfo("", "", "admin-tools")); !ok {
 		t.Error("project should match")
 	}
-	if _, ok := rule.checkClaims(newInfo("", "", "", "other")); ok {
+	if _, ok := rule.checkClaims(newInfo("", "", "other")); ok {
 		t.Error("project should not match")
 	}
 }
@@ -104,7 +105,7 @@ func TestAccessRule_CanonicalDropsEmpty(t *testing.T) {
 	}
 
 	// Token with missing claims must NOT pass the allowlists.
-	if _, ok := rule.checkClaims(newInfo("", "", "", "")); ok {
+	if _, ok := rule.checkClaims(newInfo("", "", "")); ok {
 		t.Error("missing claims passed allowlists — fail-closed broken")
 	}
 }

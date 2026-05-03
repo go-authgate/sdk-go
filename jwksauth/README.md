@@ -60,29 +60,54 @@ func profile(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-## Domain and Tenant hierarchy
+## Server-attested private claims and the prefix
 
-AuthGate partitions tokens along two dimensions:
-
-- **Domain** (`domain` claim, e.g. `oa`, `swrd`, `hwrd`) is the top-level
-  partition. Every token has exactly one Domain.
-- **Tenant** (`tenant` claim, e.g. `a76`, `a78`) is an *optional* sub-room
-  inside a Domain. Domains that have no sub-room concept simply omit the
-  claim, and the SDK exposes that as `info.Tenant() == ""`.
-
-Both claims appear independently in the JWT payload:
+AuthGate may emit up to three private claims on a token: **Domain**,
+**Project**, **ServiceAccount**. Each is optional — tokens that don't
+need a given dimension simply omit the claim. When present they appear
+in the payload under a configurable prefix (default `extra`), so the
+JWT keys are `extra_domain`, `extra_project`, `extra_service_account`.
+The SDK reads them out of the box.
 
 ```json
-// Domain-only token (Domain has no Tenant concept)
-{ "iss": "https://auth.example.com", "domain": "oa" }
-
-// Domain + Tenant token (sub-room inside a Domain)
-{ "iss": "https://auth.example.com", "domain": "oa", "tenant": "a76" }
+{
+  "iss": "https://auth.example.com",
+  "extra_domain": "oa",
+  "extra_project": "p1",
+  "extra_service_account": "sync-bot@oa.local"
+}
 ```
 
-`AccessRule` filters on Domain only; the optional Tenant value is exposed
-on `TokenInfo` for application code to read but is not enforced at the
-allowlist level.
+If your AuthGate deployment overrides `JWT_PRIVATE_CLAIM_PREFIX`, pass the
+same value to the verifier:
+
+```go
+v, err := jwksauth.NewVerifier(ctx, issuerURL, audience,
+    jwksauth.WithPrivateClaimPrefix("acme")) // reads acme_domain, acme_project, acme_service_account
+```
+
+Server and SDK must agree byte-for-byte. Reading with the wrong prefix
+yields empty Domain / Project / ServiceAccount and (when `AccessRule`
+covers those dimensions) fails closed.
+
+### Caller-supplied keys (Extras)
+
+Any other non-standard payload keys — for example a caller-supplied
+`tenant` — are surfaced on `Claims.Extras`. Read them with
+`TokenInfo.Extra`:
+
+```go
+if v, ok := info.Extra("tenant"); ok {
+    if s, ok := v.(string); ok {
+        // use the caller-supplied tenant value
+        _ = s
+    }
+}
+```
+
+`AccessRule` and the cross-issuer Domain pinning never look at Extras —
+caller-supplied keys are not server-attested, so they cannot be used to
+gate access. Apply your own checks in the handler when needed.
 
 ## Multiple issuers
 
@@ -101,8 +126,8 @@ if err != nil { log.Fatal(err) }
 // domain codes ("oa" / "hwrd" / "swrd") this stops a compromised issuer
 // from minting tokens that claim a Domain owned by another issuer.
 //
-// Tenants live entirely inside a Domain, so they are not part of the
-// cross-issuer pinning encoding.
+// Caller-supplied keys (surfaced via Claims.Extras) are not part of the
+// cross-issuer pinning — only the server-attested Domain participates.
 if err := mv.SetIssuerDomains(
     "https://auth-a.example.com=oa,hwrd;https://auth-b.example.com=swrd",
 ); err != nil {
@@ -126,17 +151,25 @@ mux.Handle("/api/admin", jwksauth.Middleware(mv, jwksauth.AccessRule{
 ## AccessRule
 
 Per-route policy; an empty slice means "this dimension is not checked".
+The "Required claim" column shows the JWT payload key under the default
+prefix (`extra`); under a custom prefix the keys become
+`<prefix>_domain` etc.
 
-| Field             | Required claim    | Match     | Notes                                                                           |
-| ----------------- | ----------------- | --------- | ------------------------------------------------------------------------------- |
-| `Scopes`          | `scope`           | space-set | Reports `403 insufficient_scope` and advertises the scope on `WWW-Authenticate` |
-| `Domains`         | `domain`          | case-fold | SDK lower-cases the rule on registration                                        |
-| `ServiceAccounts` | `service_account` | exact     | Case-sensitive                                                                  |
-| `Projects`        | `project`         | exact     | Case-sensitive                                                                  |
+| Field             | Required claim          | Match     | Notes                                                                           |
+| ----------------- | ----------------------- | --------- | ------------------------------------------------------------------------------- |
+| `Scopes`          | `scope`                 | space-set | Reports `403 insufficient_scope` and advertises the scope on `WWW-Authenticate` |
+| `Domains`         | `extra_domain`          | case-fold | SDK lower-cases the rule on registration                                        |
+| `ServiceAccounts` | `extra_service_account` | exact     | Case-sensitive                                                                  |
+| `Projects`        | `extra_project`         | exact     | Case-sensitive                                                                  |
 
-The optional `tenant` claim is read from the JWT and exposed on
-`TokenInfo.Tenant()` (case-folded) and `TokenInfo.Claims.Tenant` (raw), but
-is not part of the allowlist surface.
+Caller-supplied keys (any payload key not in the SDK's reserved-key set
+and not one of the three server-attested `<prefix>_domain` /
+`<prefix>_project` / `<prefix>_service_account` keys) are not part of the
+allowlist surface. They surface on `Claims.Extras`; read individual values
+with `TokenInfo.Extra(key)` and apply your own logic in the handler when
+needed. Note that OIDC standard claims the SDK does not name explicitly
+(for example `email`, `name`) will also land in Extras if the issuer
+emits them.
 
 Allowlist mismatches return `401 invalid_token` (generic) so the allowlist
 itself is not probeable. The full reason is logged server-side via the

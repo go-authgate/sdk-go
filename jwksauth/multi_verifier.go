@@ -43,6 +43,10 @@ type MultiVerifier struct {
 	issuerDomains atomic.Pointer[map[string][]string]
 
 	timeout time.Duration
+
+	// keys are the resolved server-attested payload keys; see
+	// [WithPrivateClaimPrefix].
+	keys claimKeys
 }
 
 // NewMultiVerifier builds a multi-issuer verifier. Every issuer in issuers
@@ -99,6 +103,9 @@ func newMultiVerifier(
 			o.apply(&cfg)
 		}
 	}
+	if err := validatePrivateClaimPrefix(cfg.privateClaimPrefix); err != nil {
+		return nil, fmt.Errorf("jwksauth: invalid private claim prefix: %w", err)
+	}
 
 	discoverCtx, cancel := context.WithTimeout(ctx, cfg.discoveryTimeout)
 	defer cancel()
@@ -110,6 +117,7 @@ func newMultiVerifier(
 	return &MultiVerifier{
 		verifiers: verifiers,
 		timeout:   cfg.verifyTimeout,
+		keys:      newClaimKeys(cfg.privateClaimPrefix),
 	}, nil
 }
 
@@ -130,9 +138,9 @@ func newMultiVerifier(
 // enforced strictly so a typo or operational mistake fails fast at
 // configuration time rather than silently disabling the check.
 //
-// Cross-issuer enforcement is Domain-level only. The optional sub-room
-// Tenant claim lives entirely inside a Domain, so there is no cross-issuer
-// Tenant exposure to defend against.
+// Cross-issuer enforcement is Domain-level only. Caller-supplied claims
+// surfaced via [Claims.Extras] are not part of cross-domain enforcement —
+// only the server-attested Domain participates here.
 //
 // Pass an empty string to disable cross-domain enforcement; safe to call
 // concurrently with [MultiVerifier.Verify] (the swap is atomic).
@@ -210,7 +218,7 @@ func (v *MultiVerifier) Verify(ctx context.Context, raw string) (*TokenInfo, err
 	if err != nil {
 		return nil, err
 	}
-	info, err := newTokenInfo(tok)
+	info, err := newTokenInfo(tok, v.keys)
 	if err != nil {
 		return nil, err
 	}

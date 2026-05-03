@@ -7,10 +7,11 @@ import (
 )
 
 // AccessRule is a per-route policy: the OAuth scopes the caller must hold
-// plus optional allowlists for the domain / service_account / project
-// claims AuthGate may emit. Filtering on the optional sub-room Tenant claim
-// is intentionally out of scope at the rule level — Domains are the
-// allowlist dimension.
+// plus optional allowlists for the three server-attested private claims
+// (Domain, ServiceAccount, Project) that AuthGate emits under the
+// configured prefix. Caller-supplied keys surfaced via [Claims.Extras] do
+// not participate in AccessRule comparisons; if you need to filter on a
+// custom dimension, read it from Extras and check it in your handler.
 //
 // Semantics:
 //   - An empty slice means "this dimension is not checked".

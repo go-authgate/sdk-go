@@ -8,6 +8,8 @@ Go SDK for AuthGate — currently provides the `credstore` package for secure cr
 
 Module: `github.com/go-authgate/sdk-go` (Go 1.25+)
 
+The `jwksauth` package's default private-claim prefix is `"extra"`, matching the upstream AuthGate `JWT_PRIVATE_CLAIM_PREFIX` default; deployments that override the server-side value must pass the same string via `jwksauth.WithPrivateClaimPrefix(...)`.
+
 ## Common Commands
 
 ```bash
