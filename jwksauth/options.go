@@ -76,11 +76,12 @@ func WithDiscoveryTimeout(d time.Duration) Option {
 
 // WithPrivateClaimPrefix configures the prefix the SDK uses when reading
 // AuthGate's server-attested private claims (Domain, Project,
-// ServiceAccount). Defaults to "extra"; pass the value here only when
+// ServiceAccount, UID). Defaults to "extra"; pass the value here only when
 // the AuthGate deployment has overridden JWT_PRIVATE_CLAIM_PREFIX. Server
 // and SDK must agree byte-for-byte — reading with the wrong prefix
-// yields empty fields and (when AccessRule covers those dimensions)
-// fails closed.
+// yields empty fields. Authorization fails closed for the three
+// dimensions [AccessRule] covers (Domain, Project, ServiceAccount); UID
+// is identity, not authorization, and must be checked by the handler.
 //
 // For [NewMultiVerifier] this prefix is shared across every configured
 // issuer: the resolved server-attested key set is cached once at

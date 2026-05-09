@@ -27,6 +27,12 @@ import (
 // under their Go names ("ClientID", "Domain", ...) rather than the
 // snake_case JWT keys; if you need the raw payload, read it from the
 // embedded [oidc.IDToken] on [TokenInfo] instead.
+//
+// Callers should treat [Claims] values as read-only and must not
+// construct them with positional composite literals (Claims{...}); the
+// SDK reserves the right to add fields in minor releases, which would
+// break positional callers but is intentionally non-breaking for keyed
+// usage. Use keyed literals or read from [TokenInfo.Claims] only.
 type Claims struct {
 	ClientID       string
 	Scope          string
