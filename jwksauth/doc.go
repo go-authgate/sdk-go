@@ -34,12 +34,15 @@
 //
 // # Server-attested private claims and the prefix
 //
-// AuthGate emits three private claims — Domain, Project, and ServiceAccount
-// — under a configurable prefix (default "extra"), so the JWT payload keys
-// are "extra_domain", "extra_project", and "extra_service_account". The
-// SDK reads them out of the box; if your AuthGate deployment has overridden
-// JWT_PRIVATE_CLAIM_PREFIX, pass the same value via
-// [WithPrivateClaimPrefix].
+// AuthGate emits four private claims — Domain, Project, ServiceAccount,
+// and UID — under a configurable prefix (default "extra"), so the JWT
+// payload keys are "extra_domain", "extra_project", "extra_service_account",
+// and "extra_uid". The SDK reads them out of the box; if your AuthGate
+// deployment has overridden JWT_PRIVATE_CLAIM_PREFIX, pass the same value
+// via [WithPrivateClaimPrefix]. UID carries the username for tokens
+// issued by user-bearing flows (Authorization Code + PKCE, Device
+// Authorization Grant); the Client Credentials flow has no user, so UID
+// is the empty string for those tokens.
 //
 // Any other non-standard payload keys (for example a caller-supplied
 // "tenant") are surfaced via [Claims.Extras]; read them with

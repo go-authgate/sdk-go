@@ -22,6 +22,7 @@ func TestPrefixedClaims_DefaultPrefix_HappyPath(t *testing.T) {
 		"extra_domain":          "oa",
 		"extra_project":         "p1",
 		"extra_service_account": "sync@oa",
+		"extra_uid":             "alice",
 		"tenant":                "a76",
 	})
 	rule := AccessRule{
@@ -49,6 +50,9 @@ func TestPrefixedClaims_DefaultPrefix_HappyPath(t *testing.T) {
 	if info.Claims.ServiceAccount != "sync@oa" {
 		t.Errorf("ServiceAccount = %q, want sync@oa", info.Claims.ServiceAccount)
 	}
+	if info.Claims.UID != "alice" {
+		t.Errorf("UID = %q, want alice", info.Claims.UID)
+	}
 	got, ok := info.Extra("tenant")
 	if !ok {
 		t.Fatalf("Extra(\"tenant\") missing")
@@ -70,7 +74,10 @@ func TestPrefixedClaims_CustomPrefix(t *testing.T) {
 	}
 
 	t.Run("acme_prefix_hits", func(t *testing.T) {
-		tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"acme_domain": "oa"})
+		tok := fi.Sign(t, "api://x", time.Minute, map[string]any{
+			"acme_domain": "oa",
+			"acme_uid":    "alice",
+		})
 		rec := runMiddleware(t, v, AccessRule{Domains: []string{"oa"}}, func(req *http.Request) {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		})
@@ -84,10 +91,16 @@ func TestPrefixedClaims_CustomPrefix(t *testing.T) {
 		if info.Claims.Domain != "oa" {
 			t.Errorf("Claims.Domain = %q, want oa", info.Claims.Domain)
 		}
+		if info.Claims.UID != "alice" {
+			t.Errorf("Claims.UID = %q, want alice", info.Claims.UID)
+		}
 	})
 
 	t.Run("default_prefix_no_fallback", func(t *testing.T) {
-		tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"extra_domain": "oa"})
+		tok := fi.Sign(t, "api://x", time.Minute, map[string]any{
+			"extra_domain": "oa",
+			"extra_uid":    "alice",
+		})
 		info, err := v.Verify(context.Background(), tok)
 		if err != nil {
 			t.Fatalf("Verify: %v", err)
@@ -98,12 +111,25 @@ func TestPrefixedClaims_CustomPrefix(t *testing.T) {
 				info.Claims.Domain,
 			)
 		}
+		if info.Claims.UID != "" {
+			t.Errorf(
+				"Claims.UID = %q, want empty (wrong prefix must not fall back)",
+				info.Claims.UID,
+			)
+		}
 		got, ok := info.Extra("extra_domain")
 		if !ok {
 			t.Fatalf("extra_domain should land in Extras when prefix is acme")
 		}
 		if s, _ := got.(string); s != "oa" {
 			t.Errorf("Extras[extra_domain] = %v, want \"oa\"", got)
+		}
+		got, ok = info.Extra("extra_uid")
+		if !ok {
+			t.Fatalf("extra_uid should land in Extras when prefix is acme")
+		}
+		if s, _ := got.(string); s != "alice" {
+			t.Errorf("Extras[extra_uid] = %v, want \"alice\"", got)
 		}
 
 		rec := runMiddleware(t, v, AccessRule{Domains: []string{"oa"}}, func(req *http.Request) {
@@ -152,6 +178,36 @@ func TestPrefixedClaims_BareDomainIgnored(t *testing.T) {
 			"status = %d, want 401 (bare \"domain\" must not satisfy Domain allowlist)",
 			rec.Code,
 		)
+	}
+}
+
+// A token carrying only the bare "uid" key (no extra_uid) must not be
+// promoted to Claims.UID. The bare key is not lost — it surfaces via
+// Extras["uid"] — but it is not treated as server-attested.
+func TestPrefixedClaims_BareUIDIgnored(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{"uid": "alice"})
+
+	info, err := v.Verify(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if info.Claims.UID != "" {
+		t.Errorf(
+			"Claims.UID = %q, want empty (bare key must not be read as server-attested)",
+			info.Claims.UID,
+		)
+	}
+	got, ok := info.Extra("uid")
+	if !ok {
+		t.Fatalf("Extra(\"uid\") missing — bare key must still surface via Extras")
+	}
+	if s, _ := got.(string); s != "alice" {
+		t.Errorf("Extras[uid] = %v, want \"alice\"", got)
 	}
 }
 

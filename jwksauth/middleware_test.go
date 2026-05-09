@@ -120,6 +120,7 @@ func TestVerifier_HappyPath(t *testing.T) {
 		"tenant":                "A76",
 		"extra_service_account": "sync@oa",
 		"extra_project":         "p1",
+		"extra_uid":             "alice",
 	})
 	info, err := v.Verify(context.Background(), tok)
 	if err != nil {
@@ -134,11 +135,50 @@ func TestVerifier_HappyPath(t *testing.T) {
 	if info.Domain() != "oa" {
 		t.Errorf("Domain() = %q, want lower-cased 'oa'", info.Domain())
 	}
+	if info.Claims.UID != "alice" {
+		t.Errorf("Claims.UID = %q, want alice", info.Claims.UID)
+	}
 	got, ok := info.Extra("tenant")
 	if !ok {
 		t.Errorf("Extra(\"tenant\") missing, want \"A76\"")
 	} else if s, isStr := got.(string); !isStr || s != "A76" {
 		t.Errorf("Extra(\"tenant\") = %v (%T), want \"A76\" (string)", got, got)
+	}
+}
+
+// Client Credentials flow has no user, so the token does not carry
+// extra_uid. Verify must succeed, Claims.UID must be empty (not panic,
+// not pulled from anywhere else), and an empty AccessRule lets the
+// request through with 200.
+func TestVerifier_ClientCredentialsShape_UIDEmpty(t *testing.T) {
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(t.Context(), fi.URL(), "api://x")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok := fi.Sign(t, "api://x", time.Minute, map[string]any{
+		"client_id":     "cli",
+		"scope":         "email",
+		"extra_domain":  "oa",
+		"extra_project": "p1",
+	})
+
+	info, err := v.Verify(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if info.Claims.UID != "" {
+		t.Errorf(
+			"Claims.UID = %q, want empty string (Client Credentials token has no user)",
+			info.Claims.UID,
+		)
+	}
+
+	rec := runMiddleware(t, v, AccessRule{}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	})
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (AccessRule{} does not check UID)", rec.Code)
 	}
 }
 
