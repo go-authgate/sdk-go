@@ -91,8 +91,11 @@ v, err := jwksauth.NewVerifier(ctx, issuerURL, audience,
 ```
 
 Server and SDK must agree byte-for-byte. Reading with the wrong prefix
-yields empty Domain / Project / ServiceAccount / UID and (when
-`AccessRule` covers those dimensions) fails closed.
+yields empty Domain / Project / ServiceAccount / UID. For the three
+dimensions `AccessRule` checks (Domain, Project, ServiceAccount), this
+fails closed. UID is identity, not authorization — `AccessRule` does
+not gate on it, so callers must check `info.Claims.UID` in their
+handler when they want to restrict by user.
 
 ### Caller-supplied keys (Extras)
 
