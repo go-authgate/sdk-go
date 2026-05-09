@@ -62,19 +62,23 @@ func profile(w http.ResponseWriter, r *http.Request) {
 
 ## Server-attested private claims and the prefix
 
-AuthGate may emit up to three private claims on a token: **Domain**,
-**Project**, **ServiceAccount**. Each is optional — tokens that don't
-need a given dimension simply omit the claim. When present they appear
-in the payload under a configurable prefix (default `extra`), so the
-JWT keys are `extra_domain`, `extra_project`, `extra_service_account`.
-The SDK reads them out of the box.
+AuthGate may emit up to four private claims on a token: **Domain**,
+**Project**, **ServiceAccount**, **UID**. Each is optional — tokens that
+don't need a given dimension simply omit the claim. When present they
+appear in the payload under a configurable prefix (default `extra`), so
+the JWT keys are `extra_domain`, `extra_project`,
+`extra_service_account`, and `extra_uid`. The SDK reads them out of the
+box. UID carries the username for user-bearing flows (Authorization
+Code + PKCE, Device Authorization Grant); Client Credentials tokens have
+no user, so `Claims.UID` is the empty string for those tokens.
 
 ```json
 {
   "iss": "https://auth.example.com",
   "extra_domain": "oa",
   "extra_project": "p1",
-  "extra_service_account": "sync-bot@oa.local"
+  "extra_service_account": "sync-bot@oa.local",
+  "extra_uid": "alice"
 }
 ```
 
@@ -83,12 +87,15 @@ same value to the verifier:
 
 ```go
 v, err := jwksauth.NewVerifier(ctx, issuerURL, audience,
-    jwksauth.WithPrivateClaimPrefix("acme")) // reads acme_domain, acme_project, acme_service_account
+    jwksauth.WithPrivateClaimPrefix("acme")) // reads acme_domain, acme_project, acme_service_account, acme_uid
 ```
 
 Server and SDK must agree byte-for-byte. Reading with the wrong prefix
-yields empty Domain / Project / ServiceAccount and (when `AccessRule`
-covers those dimensions) fails closed.
+yields empty Domain / Project / ServiceAccount / UID. For the three
+dimensions `AccessRule` checks (Domain, Project, ServiceAccount), this
+fails closed. UID is identity, not authorization — `AccessRule` does
+not gate on it, so callers must check `info.Claims.UID` in their
+handler when they want to restrict by user.
 
 ### Caller-supplied keys (Extras)
 

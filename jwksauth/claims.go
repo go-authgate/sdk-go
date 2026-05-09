@@ -11,10 +11,13 @@ import (
 // Claims holds the AuthGate-specific JWT claims plus a generic Extras map
 // for any caller-supplied keys the issuer included in the payload.
 //
-// Domain, Project, and ServiceAccount are server-attested by AuthGate;
-// configure the JWT payload prefix via [WithPrivateClaimPrefix]. Extras
-// carries every other non-standard key — read individual values with
-// [TokenInfo.Extra].
+// Domain, Project, ServiceAccount, and UID are server-attested by AuthGate;
+// configure the JWT payload prefix via [WithPrivateClaimPrefix]. UID
+// carries the username for tokens issued by user-bearing flows
+// (Authorization Code + PKCE, Device Authorization Grant); the Client
+// Credentials flow has no user, so UID will be the empty string for those
+// tokens. Extras carries every other non-standard key — read individual
+// values with [TokenInfo.Extra].
 //
 // Claims is populated by the SDK's verifier from a verified IDToken via
 // custom decoding (not via struct-tag JSON unmarshal), so it deliberately
@@ -30,9 +33,10 @@ type Claims struct {
 	Domain         string
 	ServiceAccount string
 	Project        string
+	UID            string
 
 	// Extras carries any payload keys that are neither in the SDK's
-	// reserved-key set (see [staticReservedClaimKeys]) nor the three
+	// reserved-key set (see [staticReservedClaimKeys]) nor the four
 	// server-attested "<prefix>_..." keys. The reserved set covers RFC
 	// 7519 standard JWT keys and a hand-picked subset of OIDC keys, so
 	// common OIDC keys the SDK does not name explicitly (e.g. email,
@@ -93,7 +97,7 @@ func (t *TokenInfo) Extra(key string) (any, bool) {
 // claim registry — common OIDC claims the SDK does not name explicitly
 // (e.g. email, name) will surface via Extras when the issuer emits them.
 //
-// The three server-attested keys are excluded dynamically by
+// The four server-attested keys are excluded dynamically by
 // newTokenInfo via the resolved [claimKeys].
 var staticReservedClaimKeys = map[string]struct{}{
 	"iss": {}, "sub": {}, "aud": {}, "exp": {}, "nbf": {}, "iat": {}, "jti": {},
@@ -102,21 +106,23 @@ var staticReservedClaimKeys = map[string]struct{}{
 }
 
 // claimKeys holds the resolved "<prefix>_<logical>" payload keys for the
-// three server-attested AuthGate claims. Construction-time once; read-only
-// on the verify hot path.
+// server-attested AuthGate claims. Construction-time once; read-only on
+// the verify hot path.
 type claimKeys struct {
 	domain         string
 	project        string
 	serviceAccount string
+	uid            string
 }
 
-// newClaimKeys composes the three server-attested payload keys from prefix.
+// newClaimKeys composes the server-attested payload keys from prefix.
 // Mirrors upstream's EmittedName(prefix, logical) = prefix + "_" + logical.
 func newClaimKeys(prefix string) claimKeys {
 	return claimKeys{
 		domain:         prefix + "_domain",
 		project:        prefix + "_project",
 		serviceAccount: prefix + "_service_account",
+		uid:            prefix + "_uid",
 	}
 }
 
@@ -134,13 +140,14 @@ func newTokenInfo(tok *oidc.IDToken, keys claimKeys) (*TokenInfo, error) {
 		Domain:         stringFromRaw(raw, keys.domain),
 		Project:        stringFromRaw(raw, keys.project),
 		ServiceAccount: stringFromRaw(raw, keys.serviceAccount),
+		UID:            stringFromRaw(raw, keys.uid),
 	}
 
 	for k, v := range raw {
 		if _, reserved := staticReservedClaimKeys[k]; reserved {
 			continue
 		}
-		if k == keys.domain || k == keys.project || k == keys.serviceAccount {
+		if k == keys.domain || k == keys.project || k == keys.serviceAccount || k == keys.uid {
 			continue
 		}
 		if c.Extras == nil {
