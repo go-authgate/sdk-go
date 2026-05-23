@@ -53,13 +53,12 @@ type AccessRule struct {
 // Domains are additionally lower-cased so [AccessRule.Domains] comparisons
 // are case-insensitive at the rule side.
 func (r AccessRule) canonical() AccessRule {
-	out := AccessRule{
+	return AccessRule{
 		Scopes:          trimNonEmpty(r.Scopes, false),
 		Domains:         trimNonEmpty(r.Domains, true),
 		ServiceAccounts: trimNonEmpty(r.ServiceAccounts, false),
 		Projects:        trimNonEmpty(r.Projects, false),
 	}
-	return out
 }
 
 func trimNonEmpty(in []string, lower bool) []string {

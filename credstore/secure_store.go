@@ -72,13 +72,13 @@ func NewSecureStore[T any](kr, file Store[T], opts ...SecureStoreOption[T]) *Sec
 		}
 	}
 	if s.prober != nil && s.prober.Probe() {
+		// keyring is the intended path, not a fallback: no callback fires
 		s.useKeyring = true
-		// no callback: keyring is the intended path, not a fallback
-	} else {
-		s.useKeyring = false
-		if s.onChange != nil {
-			s.onChange(file.String()) // safe: struct not yet shared
-		}
+		return s
+	}
+	// Fall back to file storage. useKeyring is already false (zero value).
+	if s.onChange != nil {
+		s.onChange(file.String()) // safe: struct not yet shared
 	}
 	return s
 }

@@ -67,7 +67,7 @@ func NewTokenSource(client *oauth.Client, opts ...Option) *TokenSource {
 func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	// Fast path: read-lock to check cache
 	ts.mu.RLock()
-	if ts.token != nil && ts.isValid() {
+	if ts.isValid() {
 		tok := ts.token
 		ts.mu.RUnlock()
 		return tok, nil
@@ -80,7 +80,7 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 		// Re-check cache: another goroutine's singleflight may have just
 		// populated it before this call started.
 		ts.mu.RLock()
-		if ts.token != nil && ts.isValid() {
+		if ts.isValid() {
 			tok := ts.token
 			ts.mu.RUnlock()
 			return tok, nil
