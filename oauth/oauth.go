@@ -83,9 +83,13 @@ const (
 	ErrCodeInvalidGrant = "invalid_grant"
 	// ErrCodeInvalidToken indicates the access token is invalid, expired, or revoked (RFC 6750 §3.1).
 	ErrCodeInvalidToken = "invalid_token"
-	// ErrCodeInvalidRequest indicates the request is malformed or missing a required parameter (RFC 6749 §5.2).
+	// ErrCodeInvalidRequest is the RFC 6749 §5.2 "invalid_request" code. This SDK
+	// also reuses it for local precondition failures such as an endpoint that has
+	// not been configured.
 	ErrCodeInvalidRequest = "invalid_request"
-	// ErrCodeInvalidState indicates the callback state parameter did not match the expected value (CSRF protection).
+	// ErrCodeInvalidState is an SDK-defined (non-standard) code signalling that an
+	// authorization-callback state parameter did not match the expected value
+	// (CSRF protection). It is not defined by the OAuth RFCs.
 	ErrCodeInvalidState = "invalid_state"
 	// ErrCodeServerError indicates an unexpected server-side condition, or a local
 	// failure handling the server's response (e.g., an unreadable or oversized error
