@@ -22,7 +22,8 @@ go get github.com/go-authgate/sdk-go
 | [oauth](oauth/)             | OAuth 2.0 token client (Device Code, Auth Code, Client Credentials, Refresh, Revoke, Introspect, UserInfo)       |
 | [discovery](discovery/)     | OIDC auto-discovery from `/.well-known/openid-configuration` with caching                                        |
 | [authflow](authflow/)       | CLI flow orchestration (Device Code polling, Auth Code + PKCE, auto-refresh TokenSource with persistent storage) |
-| [middleware](middleware/)   | `net/http` Bearer token validation middleware with `BearerAuth` and `RequireScope` (any Go HTTP framework)       |
+| [middleware](middleware/)   | `net/http` Bearer token validation middleware (online: tokeninfo / introspection per request)                    |
+| [jwksauth](jwksauth/)       | `net/http` Bearer token validation middleware (offline: cached JWKS, single + multi-issuer)                      |
 | [clientcreds](clientcreds/) | Thread-safe Client Credentials token source with auto-cache, `HTTPClient()` and `RoundTripper()` for M2M         |
 
 ### Package dependency graph
@@ -36,7 +37,23 @@ credstore (storage)     discovery (OIDC endpoint URLs)
     |             /  |  \
     v            v   v   v
     +------> authflow  middleware  clientcreds
+
+jwksauth — standalone (wraps coreos/go-oidc); no dependency on the OAuth client stack
 ```
+
+### Online vs. offline token validation
+
+`middleware` and `jwksauth` solve the same problem (validate an incoming
+`Authorization: Bearer …` header) with different trade-offs:
+
+| Concern                       | `jwksauth` (offline JWKS)        | `middleware` (online endpoint)     |
+| ----------------------------- | -------------------------------- | ---------------------------------- |
+| Per-request round-trips       | None (signature math only)       | One per request (tokeninfo/introspect) |
+| Verification latency          | Microseconds                     | 10–50 ms + auth-server tail        |
+| Revocation visibility         | After `exp` of the access token  | Instant                            |
+| Survives auth-server outage   | Yes (after first JWKS fetch)     | No                                 |
+| Opaque (non-JWT) tokens       | Not supported                    | Supported                          |
+| Multi-issuer support          | Built-in (`MultiVerifier`)       | One client per issuer              |
 
 ## Development
 

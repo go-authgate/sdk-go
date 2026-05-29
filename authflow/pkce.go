@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+
+	"github.com/go-authgate/sdk-go/oauth"
 )
 
 // PKCE holds a code verifier and its corresponding code challenge (RFC 7636).
@@ -29,6 +31,6 @@ func NewPKCE() (*PKCE, error) {
 	return &PKCE{
 		Verifier:  verifier,
 		Challenge: challenge,
-		Method:    "S256",
+		Method:    oauth.PKCEMethodS256,
 	}, nil
 }

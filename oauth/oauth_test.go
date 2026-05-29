@@ -232,6 +232,71 @@ func TestClientCredentials(t *testing.T) {
 	}
 }
 
+func TestClientCredentials_EmptySecret(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if r.PostForm.Has("client_secret") {
+			t.Errorf(
+				"client_secret should not be sent when empty, got %q",
+				r.PostForm.Get("client_secret"),
+			)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "cc-access-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test-client", Endpoints{TokenURL: server.URL + "/oauth/token"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	token, err := client.ClientCredentials(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ClientCredentials: %v", err)
+	}
+	if token.AccessToken != "cc-access-token" {
+		t.Errorf("AccessToken = %q, want %q", token.AccessToken, "cc-access-token")
+	}
+}
+
+func TestIntrospect_EmptySecret(t *testing.T) {
+	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if r.PostForm.Has("client_secret") {
+			t.Errorf(
+				"client_secret should not be sent when empty, got %q",
+				r.PostForm.Get("client_secret"),
+			)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"active":    true,
+			"scope":     "read",
+			"client_id": "test-client",
+			"sub":       "user-123",
+		})
+	})
+
+	result, err := client.Introspect(context.Background(), "some-token")
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+	if !result.Active {
+		t.Error("expected active=true")
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
 	_, client := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
@@ -436,5 +501,98 @@ func TestRequestDeviceCode_NoEndpoint(t *testing.T) {
 	_, err = client.RequestDeviceCode(context.Background(), []string{"read"})
 	if err == nil {
 		t.Fatal("expected error for missing endpoint")
+	}
+}
+
+func TestResponseBodyTooLarge(t *testing.T) {
+	// Serve a JSON response larger than maxResponseBytes (1 MB)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Write a valid JSON prefix followed by a huge padding string
+		w.Write([]byte(`{"access_token":"`))
+		padding := make([]byte, maxResponseBytes+1)
+		for i := range padding {
+			padding[i] = 'A'
+		}
+		w.Write(padding)
+		w.Write([]byte(`"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test", Endpoints{TokenURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.ClientCredentials(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for oversized response")
+	}
+	if !errors.Is(err, errResponseTooLarge) {
+		t.Errorf("expected errResponseTooLarge, got: %v", err)
+	}
+}
+
+func TestErrorResponseBodyTooLarge(t *testing.T) {
+	// Serve an error response larger than maxResponseBytes
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		padding := make([]byte, maxResponseBytes+1)
+		for i := range padding {
+			padding[i] = 'X'
+		}
+		w.Write(padding)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test", Endpoints{TokenURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.ClientCredentials(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for oversized error response")
+	}
+	var oauthErr *Error
+	if !errors.As(err, &oauthErr) {
+		t.Fatalf("expected *Error, got %T: %v", err, err)
+	}
+	if oauthErr.Description != "error response body exceeds size limit" {
+		t.Errorf("unexpected description: %s", oauthErr.Description)
+	}
+}
+
+// TestResponseBodyExactlyAtBoundary covers the case where the body is valid
+// JSON whose total length equals maxResponseBytes+1: Decode succeeds and
+// consumes the LimitedReader's sentinel byte (lr.N == 0). Without a post-decode
+// size check the response would be silently accepted despite exceeding the cap.
+func TestResponseBodyExactlyAtBoundary(t *testing.T) {
+	const prefix = `{"access_token":"`
+	const suffix = `"}`
+	padLen := maxResponseBytes + 1 - len(prefix) - len(suffix)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(prefix))
+		padding := make([]byte, padLen)
+		for i := range padding {
+			padding[i] = 'A'
+		}
+		w.Write(padding)
+		w.Write([]byte(suffix))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient("test", Endpoints{TokenURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.ClientCredentials(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for response at boundary")
+	}
+	if !errors.Is(err, errResponseTooLarge) {
+		t.Errorf("expected errResponseTooLarge, got: %v", err)
 	}
 }

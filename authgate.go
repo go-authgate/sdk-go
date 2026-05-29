@@ -4,7 +4,10 @@ package authgate
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	retry "github.com/appleboy/go-httpretry"
 
 	"github.com/go-authgate/sdk-go/authflow"
 	"github.com/go-authgate/sdk-go/credstore"
@@ -79,16 +82,19 @@ func WithFlowMode(mode FlowMode) Option {
 //	    os.Getenv("CLIENT_ID"),
 //	    authgate.WithScopes("profile", "email"),
 //	)
-func New(ctx context.Context, authgateURL, clientID string, opts ...Option) (*oauth.Client, *oauth.Token, error) {
+func New(
+	ctx context.Context,
+	authgateURL, clientID string,
+	opts ...Option,
+) (*oauth.Client, *oauth.Token, error) {
 	if authgateURL == "" {
-		return nil, nil, fmt.Errorf("authgate: authgateURL is required")
+		return nil, nil, errors.New("authgate: authgateURL is required")
 	}
 	if clientID == "" {
-		return nil, nil, fmt.Errorf("authgate: clientID is required")
+		return nil, nil, errors.New("authgate: clientID is required")
 	}
 
 	cfg := &config{
-		scopes:      []string{},
 		serviceName: "authgate",
 		storePath:   ".authgate-tokens.json",
 		localPort:   8088,
@@ -100,8 +106,14 @@ func New(ctx context.Context, authgateURL, clientID string, opts ...Option) (*oa
 		}
 	}
 
-	// 1. Discover endpoints
-	disco, err := discovery.NewClient(authgateURL)
+	// 1. Create a shared HTTP client for both discovery and OAuth
+	httpClient, err := retry.NewRealtimeClient(retry.WithNoLogging())
+	if err != nil {
+		return nil, nil, fmt.Errorf("authgate: create http client: %w", err)
+	}
+
+	// 2. Discover endpoints
+	disco, err := discovery.NewClient(authgateURL, discovery.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, nil, fmt.Errorf("authgate: discovery client: %w", err)
 	}
@@ -110,44 +122,46 @@ func New(ctx context.Context, authgateURL, clientID string, opts ...Option) (*oa
 		return nil, nil, fmt.Errorf("authgate: fetch discovery: %w", err)
 	}
 
-	// 2. Create OAuth client
-	client, err := oauth.NewClient(clientID, meta.Endpoints())
+	// 3. Create OAuth client
+	client, err := oauth.NewClient(clientID, meta.Endpoints(), oauth.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, nil, fmt.Errorf("authgate: oauth client: %w", err)
 	}
 
-	// 3. Set up token store and source
+	// 4. Set up token store and source
 	store := credstore.DefaultTokenSecureStore(cfg.serviceName, cfg.storePath)
 	ts := authflow.NewTokenSource(client, authflow.WithStore(store))
 
-	// 4. Return cached/refreshed token if available
+	// 5. Return a cached/refreshed token if available. Only ErrReauthRequired
+	// drops through to the interactive flow; other errors (transient store
+	// or refresh failures) propagate so callers don't surprise users with an
+	// unwanted browser pop-up.
 	token, err := ts.Token(ctx)
 	if err == nil {
 		return client, token, nil
 	}
+	if !errors.Is(err, authflow.ErrReauthRequired) {
+		return nil, nil, fmt.Errorf("authgate: get token: %w", err)
+	}
 
-	// 5. No valid token — run the appropriate authentication flow
-	switch cfg.flowMode {
-	case FlowModeBrowser:
+	// 6. No valid token — run the appropriate authentication flow.
+	// Treat any non-Device value as auto-detect: explicit Browser forces
+	// the auth-code flow, while Auto (and any unknown value) probes for a
+	// usable browser before falling back to the device flow.
+	useBrowser := cfg.flowMode == FlowModeBrowser ||
+		(cfg.flowMode != FlowModeDevice && authflow.CheckBrowserAvailability())
+	if useBrowser {
 		token, err = authflow.RunAuthCodeFlow(ctx, client, cfg.scopes,
 			authflow.WithLocalPort(cfg.localPort),
 		)
-	case FlowModeDevice:
+	} else {
 		token, err = authflow.RunDeviceFlow(ctx, client, cfg.scopes)
-	default: // FlowModeAuto
-		if authflow.CheckBrowserAvailability() {
-			token, err = authflow.RunAuthCodeFlow(ctx, client, cfg.scopes,
-				authflow.WithLocalPort(cfg.localPort),
-			)
-		} else {
-			token, err = authflow.RunDeviceFlow(ctx, client, cfg.scopes)
-		}
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("authgate: authenticate: %w", err)
 	}
 
-	// 6. Persist the new token
+	// 7. Persist the new token
 	if saveErr := ts.SaveToken(token); saveErr != nil {
 		return nil, nil, fmt.Errorf("authgate: save token: %w", saveErr)
 	}
