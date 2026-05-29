@@ -68,8 +68,9 @@ const (
 // PKCEMethodS256 is the SHA-256 PKCE code-challenge method (RFC 7636 §4.3).
 const PKCEMethodS256 = "S256"
 
-// OAuth 2.0 error codes used in error responses
-// (RFC 6749 §5.2 & §4.1.2.1, RFC 6750 §3.1, RFC 8628 §3.5).
+// Error codes used in error responses. Most are RFC-defined OAuth 2.0 codes
+// (RFC 6749 §5.2 & §4.1.2.1, RFC 6750 §3.1, RFC 8628 §3.5); ErrCodeInvalidState
+// is an SDK-defined extension (see its doc comment below).
 const (
 	// ErrCodeAuthorizationPending signals the user has not yet completed device authorization (RFC 8628 §3.5).
 	ErrCodeAuthorizationPending = "authorization_pending"
