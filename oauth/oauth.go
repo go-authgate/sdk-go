@@ -69,7 +69,7 @@ const (
 const PKCEMethodS256 = "S256"
 
 // OAuth 2.0 error codes used in error responses
-// (RFC 6749 §5.2, RFC 6750 §3.1, RFC 8628 §3.5).
+// (RFC 6749 §5.2 & §4.1.2.1, RFC 6750 §3.1, RFC 8628 §3.5).
 const (
 	// ErrCodeAuthorizationPending signals the user has not yet completed device authorization (RFC 8628 §3.5).
 	ErrCodeAuthorizationPending = "authorization_pending"
@@ -87,7 +87,9 @@ const (
 	ErrCodeInvalidRequest = "invalid_request"
 	// ErrCodeInvalidState indicates the callback state parameter did not match the expected value (CSRF protection).
 	ErrCodeInvalidState = "invalid_state"
-	// ErrCodeServerError indicates an unexpected server-side condition prevented fulfilling the request (RFC 6749 §4.1.2.1).
+	// ErrCodeServerError indicates an unexpected server-side condition, or a local
+	// failure handling the server's response (e.g., an unreadable or oversized error
+	// body), prevented fulfilling the request (RFC 6749 §4.1.2.1).
 	ErrCodeServerError = "server_error"
 )
 
