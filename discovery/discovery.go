@@ -25,6 +25,12 @@ const (
 	wellKnownPath   = "/.well-known/openid-configuration"
 	defaultCacheTTL = 1 * time.Hour
 
+	// fetchTimeout caps the singleflight discovery round-trip. Because the shared
+	// fetch context is detached from the caller's deadline (context.WithoutCancel),
+	// this bound prevents a hung server from making the shared fetch goroutine
+	// outlive every caller indefinitely.
+	fetchTimeout = 30 * time.Second
+
 	// maxResponseBytes caps the discovery response read size.
 	maxResponseBytes = 1 << 20 // 1 MB
 
@@ -172,8 +178,16 @@ func (c *Client) Fetch(ctx context.Context) (*Metadata, error) {
 // held only for the cache check and cache update, not during the network call.
 // The shared function returns the canonical (never-mutated) *Metadata; each
 // caller clones it below so every Fetch receives its own copy.
+//
+// The shared fetch runs under a context detached from the caller's
+// cancellation (context.WithoutCancel) and bounded by fetchTimeout, so the
+// first caller's deadline cannot abort the fetch for every concurrent waiter.
+// Each caller still honors its own cancellation via the select on ctx.Done.
 func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
-	v, err, _ := c.group.Do("fetch", func() (any, error) {
+	ch := c.group.DoChan("fetch", func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		defer cancel()
+
 		// Double-check after coalescing into the singleflight slot.
 		c.mu.RLock()
 		if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
@@ -185,7 +199,7 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 
 		// HTTP fetch happens outside any lock.
 		discoveryURL := c.issuerURL + wellKnownPath
-		resp, err := c.httpClient.Get(ctx, discoveryURL)
+		resp, err := c.httpClient.Get(fetchCtx, discoveryURL)
 		if err != nil {
 			return nil, fmt.Errorf("discovery: fetch %s: %w", discoveryURL, err)
 		}
@@ -239,10 +253,16 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 
 		return &meta, nil
 	})
-	if err != nil {
-		return nil, err
+
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		// Clone per caller: singleflight hands the same value to every coalesced
+		// caller, so cloning here keeps Fetch's "returned Metadata is a copy" contract.
+		return cloneMetadata(res.Val.(*Metadata)), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	// Clone per caller: singleflight hands the same value to every coalesced
-	// caller, so cloning here keeps Fetch's "returned Metadata is a copy" contract.
-	return cloneMetadata(v.(*Metadata)), nil
 }
