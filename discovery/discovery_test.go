@@ -209,6 +209,83 @@ func TestFetch_Concurrent(t *testing.T) {
 	}
 }
 
+// TestFetch_ConcurrentCancellation verifies that one caller cancelling its
+// context does not abort the shared singleflight fetch for other coalesced
+// callers. The shared fetch runs under context.WithoutCancel, so caller A's
+// cancellation must surface only to A while caller B still succeeds.
+func TestFetch_ConcurrentCancellation(t *testing.T) {
+	var (
+		callCount atomic.Int32
+		serverURL string
+		once      sync.Once
+	)
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		once.Do(func() { close(started) })
+		<-release // hold the request open until the test releases it
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Metadata{
+			Issuer:        serverURL,
+			TokenEndpoint: serverURL + "/oauth/token",
+		})
+	}))
+	serverURL = server.URL
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL, WithCacheTTL(1*time.Hour))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	// Caller A: cancelable context, canceled while the fetch is in flight.
+	ctxA, cancelA := context.WithCancel(context.Background())
+	errA := make(chan error, 1)
+	go func() {
+		_, e := client.Fetch(ctxA)
+		errA <- e
+	}()
+
+	// Wait until the shared HTTP request is in flight (singleflight slot held).
+	<-started
+
+	// Caller B: independent context, coalesces into the same in-flight fetch.
+	type result struct {
+		meta *Metadata
+		err  error
+	}
+	resB := make(chan result, 1)
+	go func() {
+		m, e := client.Fetch(context.Background())
+		resB <- result{m, e}
+	}()
+
+	// Give B a moment to coalesce into the singleflight slot before A cancels.
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel A: must surface to A without aborting the shared fetch.
+	cancelA()
+	if e := <-errA; !errors.Is(e, context.Canceled) {
+		t.Errorf("caller A error = %v, want context.Canceled", e)
+	}
+
+	// Release the server so the shared fetch completes.
+	close(release)
+
+	b := <-resB
+	if b.err != nil {
+		t.Fatalf("caller B (independent ctx) failed after A canceled: %v", b.err)
+	}
+	if b.meta == nil || b.meta.TokenEndpoint != serverURL+"/oauth/token" {
+		t.Errorf("caller B metadata = %+v, want TokenEndpoint %q", b.meta, serverURL+"/oauth/token")
+	}
+	if count := callCount.Load(); count != 1 {
+		t.Errorf("server called %d times, want 1 (shared fetch)", count)
+	}
+}
+
 func TestEndpoints(t *testing.T) {
 	meta := &Metadata{
 		Issuer:                      "https://auth.example.com",
