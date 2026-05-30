@@ -16,6 +16,7 @@ import (
 	"time"
 
 	retry "github.com/appleboy/go-httpretry"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/go-authgate/sdk-go/oauth"
 )
@@ -23,6 +24,12 @@ import (
 const (
 	wellKnownPath   = "/.well-known/openid-configuration"
 	defaultCacheTTL = 1 * time.Hour
+
+	// fetchTimeout caps the singleflight discovery round-trip. Because the shared
+	// fetch context is detached from the caller's deadline (context.WithoutCancel),
+	// this bound prevents a hung server from making the shared fetch goroutine
+	// outlive every caller indefinitely.
+	fetchTimeout = 30 * time.Second
 
 	// maxResponseBytes caps the discovery response read size.
 	maxResponseBytes = 1 << 20 // 1 MB
@@ -104,6 +111,7 @@ type Client struct {
 	mu        sync.RWMutex
 	cached    *Metadata
 	fetchedAt time.Time
+	group     singleflight.Group
 }
 
 // Option configures a discovery Client.
@@ -166,65 +174,95 @@ func (c *Client) Fetch(ctx context.Context) (*Metadata, error) {
 }
 
 // refresh fetches fresh metadata from the discovery endpoint.
+// singleflight coalesces concurrent misses into one HTTP request; the lock is
+// held only for the cache check and cache update, not during the network call.
+// The shared function returns the canonical (never-mutated) *Metadata; each
+// caller clones it below so every Fetch receives its own copy.
+//
+// The shared fetch runs under a context detached from the caller's
+// cancellation (context.WithoutCancel) and bounded by fetchTimeout, so the
+// first caller's deadline cannot abort the fetch for every concurrent waiter.
+// Each caller still honors its own cancellation via the select on ctx.Done.
 func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	ch := c.group.DoChan("fetch", func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		defer cancel()
 
-	// Double-check after acquiring write lock
-	if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
-		return cloneMetadata(c.cached), nil
-	}
-
-	discoveryURL := c.issuerURL + wellKnownPath
-	resp, err := c.httpClient.Get(ctx, discoveryURL)
-	if err != nil {
-		return nil, fmt.Errorf("discovery: fetch %s: %w", discoveryURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"discovery: unexpected status %d from %s",
-			resp.StatusCode,
-			discoveryURL,
-		)
-	}
-
-	var meta Metadata
-	lr := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
-	if err := json.NewDecoder(lr).Decode(&meta); err != nil {
-		if lr.N == 0 {
-			return nil, fmt.Errorf("%w: %w", errResponseTooLarge, err)
+		// Double-check after coalescing into the singleflight slot.
+		c.mu.RLock()
+		if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
+			cached := c.cached
+			c.mu.RUnlock()
+			return cached, nil
 		}
-		return nil, fmt.Errorf("discovery: decode response: %w", err)
-	}
-	if lr.N == 0 {
-		return nil, errResponseTooLarge
-	}
+		c.mu.RUnlock()
 
-	// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
-	issuer := strings.TrimRight(meta.Issuer, "/")
-	if issuer != c.issuerURL {
-		return nil, fmt.Errorf(
-			"discovery: issuer mismatch: got %q, expected %q",
-			meta.Issuer,
-			c.issuerURL,
-		)
+		// HTTP fetch happens outside any lock.
+		discoveryURL := c.issuerURL + wellKnownPath
+		resp, err := c.httpClient.Get(fetchCtx, discoveryURL)
+		if err != nil {
+			return nil, fmt.Errorf("discovery: fetch %s: %w", discoveryURL, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf(
+				"discovery: unexpected status %d from %s",
+				resp.StatusCode,
+				discoveryURL,
+			)
+		}
+
+		var meta Metadata
+		lr := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
+		if err := json.NewDecoder(lr).Decode(&meta); err != nil {
+			if lr.N == 0 {
+				return nil, fmt.Errorf("%w: %w", errResponseTooLarge, err)
+			}
+			return nil, fmt.Errorf("discovery: decode response: %w", err)
+		}
+		if lr.N == 0 {
+			return nil, errResponseTooLarge
+		}
+
+		// Validate issuer matches the expected URL (OIDC Discovery 1.0 §4.3)
+		issuer := strings.TrimRight(meta.Issuer, "/")
+		if issuer != c.issuerURL {
+			return nil, fmt.Errorf(
+				"discovery: issuer mismatch: got %q, expected %q",
+				meta.Issuer,
+				c.issuerURL,
+			)
+		}
+
+		// AuthGate uses a fixed device authorization path. Derive it from issuer
+		// when not explicitly advertised in the discovery response.
+		if meta.DeviceAuthorizationEndpoint == "" {
+			meta.DeviceAuthorizationEndpoint = issuer + deviceCodePath
+		}
+
+		// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
+		if meta.IntrospectionEndpoint == "" {
+			meta.IntrospectionEndpoint = issuer + introspectionPath
+		}
+
+		c.mu.Lock()
+		c.cached = &meta
+		c.fetchedAt = time.Now()
+		c.mu.Unlock()
+
+		return &meta, nil
+	})
+
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		// Clone per caller: singleflight hands the same value to every coalesced
+		// caller, so cloning here keeps Fetch's "returned Metadata is a copy" contract.
+		return cloneMetadata(res.Val.(*Metadata)), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-
-	// AuthGate uses a fixed device authorization path. Derive it from issuer
-	// when not explicitly advertised in the discovery response.
-	if meta.DeviceAuthorizationEndpoint == "" {
-		meta.DeviceAuthorizationEndpoint = issuer + deviceCodePath
-	}
-
-	// AuthGate has /oauth/introspect but doesn't yet advertise it in discovery
-	if meta.IntrospectionEndpoint == "" {
-		meta.IntrospectionEndpoint = issuer + introspectionPath
-	}
-
-	c.cached = &meta
-	c.fetchedAt = time.Now()
-
-	return cloneMetadata(&meta), nil
 }

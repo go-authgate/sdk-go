@@ -128,11 +128,15 @@ type errorResponse struct {
 func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 	var oauthErr *oauth.Error
 	if errors.As(err, &oauthErr) {
-		if oauthErr.Code == oauth.ErrCodeServerError {
+		switch oauthErr.Code {
+		case oauth.ErrCodeServerError:
 			writeJSON(w, http.StatusInternalServerError, errorResponse{
 				Error:       oauthErr.Code,
 				Description: oauthErr.Description,
 			})
+			return
+		case oauth.ErrCodeInsufficientScope:
+			writeInsufficientScope(w, oauthErr.Description)
 			return
 		}
 
@@ -158,11 +162,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeInsufficientScope(w http.ResponseWriter, scope string) {
+// writeInsufficientScope writes a 403 insufficient_scope response with the
+// RFC 6750 §3 WWW-Authenticate challenge.
+func writeInsufficientScope(w http.ResponseWriter, description string) {
 	w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
 	writeJSON(w, http.StatusForbidden, errorResponse{
-		Error:       "insufficient_scope",
-		Description: "Token does not have required scope: " + scope,
+		Error:       oauth.ErrCodeInsufficientScope,
+		Description: description,
 	})
 }
 
@@ -195,9 +201,13 @@ func BearerAuth(opts ...Option) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Check required scopes
+			// Check required scopes. Route through the configured error handler
+			// so a custom ErrorHandler still sees scope failures.
 			if scope, missing := info.firstMissingScope(cfg.requiredScopes); missing {
-				writeInsufficientScope(w, scope)
+				cfg.errorHandler(w, r, &oauth.Error{
+					Code:        oauth.ErrCodeInsufficientScope,
+					Description: "Token does not have required scope: " + scope,
+				})
 				return
 			}
 
@@ -222,7 +232,7 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 			}
 
 			if scope, missing := info.firstMissingScope(scopes); missing {
-				writeInsufficientScope(w, scope)
+				writeInsufficientScope(w, "Token does not have required scope: "+scope)
 				return
 			}
 

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -195,6 +196,44 @@ func TestBearerAuth_RequiredScopes(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestBearerAuth_RequiredScopes_CustomErrorHandler(t *testing.T) {
+	_, oauthClient := setupTokenInfoServer(t)
+
+	var gotErr error
+	handler := BearerAuth(
+		WithOAuthClient(oauthClient),
+		WithRequiredScopes("admin"),
+		WithErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+			gotErr = err
+			w.WriteHeader(http.StatusTeapot)
+		}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for missing scope")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTeapot {
+		t.Errorf(
+			"status = %d, want %d (custom handler should be invoked)",
+			rec.Code,
+			http.StatusTeapot,
+		)
+	}
+
+	var oauthErr *oauth.Error
+	if !errors.As(gotErr, &oauthErr) {
+		t.Fatalf("error handler received %v, want *oauth.Error", gotErr)
+	}
+	if oauthErr.Code != oauth.ErrCodeInsufficientScope {
+		t.Errorf("error code = %q, want %q", oauthErr.Code, oauth.ErrCodeInsufficientScope)
 	}
 }
 

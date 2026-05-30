@@ -209,6 +209,76 @@ func TestFetch_Concurrent(t *testing.T) {
 	}
 }
 
+// TestFetch_ConcurrentCancellation verifies that a caller cancelling its
+// context does not abort the shared singleflight fetch. Because the shared
+// fetch runs under context.WithoutCancel, the cancellation must surface only
+// to that caller; the fetch completes and populates the cache, so a subsequent
+// Fetch succeeds without a second server round-trip.
+func TestFetch_ConcurrentCancellation(t *testing.T) {
+	var (
+		callCount atomic.Int32
+		serverURL string
+		once      sync.Once
+	)
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		once.Do(func() { close(started) })
+		<-release // hold the request open until the test releases it
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Metadata{
+			Issuer:        serverURL,
+			TokenEndpoint: serverURL + "/oauth/token",
+		})
+	}))
+	serverURL = server.URL
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL, WithCacheTTL(1*time.Hour))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	// Caller A cancels its context while the shared fetch is in flight.
+	ctxA, cancelA := context.WithCancel(context.Background())
+	errA := make(chan error, 1)
+	go func() {
+		_, e := client.Fetch(ctxA)
+		errA <- e
+	}()
+
+	// Synchronize on the server handler: the shared HTTP request is now in
+	// flight and the singleflight slot is held, so cancelling A cannot race
+	// ahead of the fetch starting.
+	<-started
+
+	// Cancel A: must surface to A without aborting the shared fetch.
+	cancelA()
+	if e := <-errA; !errors.Is(e, context.Canceled) {
+		t.Errorf("caller A error = %v, want context.Canceled", e)
+	}
+
+	// Release the server: the detached shared fetch completes and caches the
+	// metadata even though its initiating caller canceled.
+	close(release)
+
+	// A subsequent fetch must succeed from the completed shared fetch (cache
+	// hit, or coalesced into the still-in-flight call) with no second server
+	// round-trip — proving A's cancellation did not abort the shared fetch.
+	meta, err := client.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch after canceled caller: %v", err)
+	}
+	if meta == nil || meta.TokenEndpoint != serverURL+"/oauth/token" {
+		t.Errorf("metadata = %+v, want TokenEndpoint %q", meta, serverURL+"/oauth/token")
+	}
+	if count := callCount.Load(); count != 1 {
+		t.Errorf("server called %d times, want 1 (shared fetch not restarted)", count)
+	}
+}
+
 func TestEndpoints(t *testing.T) {
 	meta := &Metadata{
 		Issuer:                      "https://auth.example.com",

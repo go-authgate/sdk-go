@@ -84,6 +84,8 @@ const (
 	ErrCodeInvalidGrant = "invalid_grant"
 	// ErrCodeInvalidToken indicates the access token is invalid, expired, or revoked (RFC 6750 §3.1).
 	ErrCodeInvalidToken = "invalid_token"
+	// ErrCodeInsufficientScope indicates the token lacks a scope required to access the resource (RFC 6750 §3.1).
+	ErrCodeInsufficientScope = "insufficient_scope"
 	// ErrCodeInvalidRequest is the RFC 6749 §5.2 "invalid_request" code. This SDK
 	// also reuses it for local precondition failures such as an endpoint that has
 	// not been configured.
