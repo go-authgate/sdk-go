@@ -65,26 +65,30 @@ func acquireFileLock(filePath string) (*fileLock, error) {
 	)
 }
 
-// release releases the file lock. It removes the lock file only when the file
-// still on disk is the one this holder created (identified via ownInfo): if our
-// critical section stalled past staleLockTimeout, another process may have
-// removed our lock as stale and created its own at the same path, and deleting
-// that file would break the new holder's mutual exclusion. This narrows but
-// does not eliminate the race — a takeover landing between the Stat and Remove
-// can still occur — so lockfile-based exclusion under a wall-clock stale
-// timeout remains best-effort.
+// release releases the file lock. When this holder's identity was captured at
+// acquire time (ownInfo set), it removes the lock file only if the file still
+// on disk is the one it created: if our critical section stalled past
+// staleLockTimeout, another process may have removed our lock as stale and
+// created its own at the same path, and deleting that file would break the new
+// holder's mutual exclusion. When the identity could not be captured (the
+// acquire-time Stat failed), it falls back to an unconditional remove. This
+// narrows but does not eliminate the race — a takeover landing between the Stat
+// and Remove can still occur — so lockfile-based exclusion under a wall-clock
+// stale timeout remains best-effort.
 func (fl *fileLock) release() error {
 	var closeErr error
 	if fl.lockFile != nil {
 		closeErr = fl.lockFile.Close()
 	}
 
-	// Remove the lock file only when it is still the one we created (or its
-	// identity is unknown, in which case we fall back to the prior unconditional
-	// behavior). A failed Stat means it is already gone — nothing to clean up.
 	var removeErr error
-	if onDisk, statErr := os.Stat(fl.lockPath); statErr == nil &&
-		(fl.ownInfo == nil || os.SameFile(fl.ownInfo, onDisk)) {
+	if fl.ownInfo == nil {
+		// Identity unknown — fall back to the prior unconditional remove.
+		removeErr = os.Remove(fl.lockPath)
+	} else if onDisk, statErr := os.Stat(fl.lockPath); statErr == nil &&
+		os.SameFile(fl.ownInfo, onDisk) {
+		// Still our file. If a different process recreated the lock after a
+		// stale takeover, SameFile is false and we leave its lock intact.
 		removeErr = os.Remove(fl.lockPath)
 	}
 	return errors.Join(closeErr, removeErr)

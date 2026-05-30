@@ -630,6 +630,10 @@ func TestConfidentialClientAuth(t *testing.T) {
 		{"Revoke", func(c *Client) error {
 			return c.Revoke(context.Background(), "tok")
 		}},
+		{"RequestDeviceCode", func(c *Client) error {
+			_, err := c.RequestDeviceCode(context.Background(), nil)
+			return err
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -655,9 +659,10 @@ func TestConfidentialClientAuth(t *testing.T) {
 			t.Cleanup(server.Close)
 
 			client, err := NewClient("cid", Endpoints{
-				TokenURL:         server.URL + "/token",
-				RevocationURL:    server.URL + "/revoke",
-				IntrospectionURL: server.URL + "/introspect",
+				TokenURL:               server.URL + "/token",
+				RevocationURL:          server.URL + "/revoke",
+				IntrospectionURL:       server.URL + "/introspect",
+				DeviceAuthorizationURL: server.URL + "/device",
 			}, WithClientSecret("secret"))
 			if err != nil {
 				t.Fatalf("NewClient: %v", err)
