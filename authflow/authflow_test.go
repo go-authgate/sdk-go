@@ -155,7 +155,7 @@ func TestRunAuthCodeFlow(t *testing.T) {
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
 			if r.URL.Query().Get("state") != state {
-				errCh <- &oauth.Error{Code: "invalid_state"}
+				errCh <- &oauth.Error{Code: oauth.ErrCodeInvalidState}
 				return
 			}
 			code := r.URL.Query().Get("code")
@@ -221,7 +221,7 @@ func TestRunAuthCodeFlow_DuplicateCallback(t *testing.T) {
 		once.Do(func() {
 			handled = true
 			if r.URL.Query().Get("state") != state {
-				errCh <- &oauth.Error{Code: "invalid_state"}
+				errCh <- &oauth.Error{Code: oauth.ErrCodeInvalidState}
 				return
 			}
 			codeCh <- r.URL.Query().Get("code")
@@ -288,7 +288,7 @@ func TestRunAuthCodeFlow_InvalidState(t *testing.T) {
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
 			if r.URL.Query().Get("state") != state {
-				errCh <- &oauth.Error{Code: "invalid_state"}
+				errCh <- &oauth.Error{Code: oauth.ErrCodeInvalidState}
 				return
 			}
 			codeCh <- r.URL.Query().Get("code")
@@ -311,7 +311,7 @@ func TestRunAuthCodeFlow_InvalidState(t *testing.T) {
 		t.Error("should not receive code with wrong state")
 	case err := <-errCh:
 		var oauthErr *oauth.Error
-		if !errors.As(err, &oauthErr) || oauthErr.Code != "invalid_state" {
+		if !errors.As(err, &oauthErr) || oauthErr.Code != oauth.ErrCodeInvalidState {
 			t.Errorf("expected invalid_state error, got: %v", err)
 		}
 	}

@@ -22,7 +22,7 @@ type contextKey struct{}
 const clientSubjectPrefix = "client:"
 
 func newTokenNotActiveErr() *oauth.Error {
-	return &oauth.Error{Code: "invalid_token", Description: "Token is not active"}
+	return &oauth.Error{Code: oauth.ErrCodeInvalidToken, Description: "Token is not active"}
 }
 
 // TokenInfo holds validated token information extracted from the request.
@@ -112,13 +112,13 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 	var oauthErr *oauth.Error
 	if errors.As(err, &oauthErr) {
 		switch oauthErr.Code {
-		case "server_error":
+		case oauth.ErrCodeServerError:
 			writeJSON(w, http.StatusInternalServerError, errorResponse{
 				Error:       oauthErr.Code,
 				Description: oauthErr.Description,
 			})
 			return
-		case "insufficient_scope":
+		case oauth.ErrCodeInsufficientScope:
 			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
 			writeJSON(w, http.StatusForbidden, errorResponse{
 				Error:       oauthErr.Code,
@@ -138,7 +138,7 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 
 	// Non-OAuth errors are server-side issues
 	writeJSON(w, http.StatusInternalServerError, errorResponse{
-		Error:       "server_error",
+		Error:       oauth.ErrCodeServerError,
 		Description: "Internal server error",
 	})
 }
@@ -152,7 +152,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeInsufficientScope(w http.ResponseWriter, scope string) {
 	w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
 	writeJSON(w, http.StatusForbidden, errorResponse{
-		Error:       "insufficient_scope",
+		Error:       oauth.ErrCodeInsufficientScope,
 		Description: "Token does not have required scope: " + scope,
 	})
 }
@@ -190,7 +190,7 @@ func BearerAuth(opts ...Option) func(http.Handler) http.Handler {
 			for _, scope := range cfg.requiredScopes {
 				if !info.HasScope(scope) {
 					cfg.errorHandler(w, r, &oauth.Error{
-						Code:        "insufficient_scope",
+						Code:        oauth.ErrCodeInsufficientScope,
 						Description: "Token does not have required scope: " + scope,
 					})
 					return
@@ -241,7 +241,10 @@ func extractBearerToken(r *http.Request) string {
 
 func validateToken(ctx context.Context, cfg *config, token string) (*TokenInfo, error) {
 	if cfg.client == nil {
-		return nil, &oauth.Error{Code: "server_error", Description: "OAuth client not configured"}
+		return nil, &oauth.Error{
+			Code:        oauth.ErrCodeServerError,
+			Description: "OAuth client not configured",
+		}
 	}
 
 	switch cfg.mode {
