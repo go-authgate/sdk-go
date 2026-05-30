@@ -468,6 +468,18 @@ func (ts *TokenSource) loadOrRefresh(ctx context.Context) (*oauth.Token, error) 
 		return nil, fmt.Errorf("authflow: refresh token: %w", err)
 	}
 
+	// RFC 6749 §6 permits the server to omit refresh_token (and scope) from a
+	// refresh response when they are unchanged. Carry the prior values forward
+	// so a successful refresh never erases a still-valid refresh token — which
+	// would force interactive re-authentication on the next expiry — or drop
+	// the granted scope.
+	if refreshed.RefreshToken == "" {
+		refreshed.RefreshToken = stored.RefreshToken
+	}
+	if refreshed.Scope == "" {
+		refreshed.Scope = stored.Scope
+	}
+
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
