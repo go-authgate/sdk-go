@@ -170,14 +170,16 @@ func (c *Client) Fetch(ctx context.Context) (*Metadata, error) {
 // refresh fetches fresh metadata from the discovery endpoint.
 // singleflight coalesces concurrent misses into one HTTP request; the lock is
 // held only for the cache check and cache update, not during the network call.
+// The shared function returns the canonical (never-mutated) *Metadata; each
+// caller clones it below so every Fetch receives its own copy.
 func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 	v, err, _ := c.group.Do("fetch", func() (any, error) {
 		// Double-check after coalescing into the singleflight slot.
 		c.mu.RLock()
 		if c.cached != nil && time.Since(c.fetchedAt) < c.cacheTTL {
-			cp := cloneMetadata(c.cached)
+			cached := c.cached
 			c.mu.RUnlock()
-			return cp, nil
+			return cached, nil
 		}
 		c.mu.RUnlock()
 
@@ -235,10 +237,12 @@ func (c *Client) refresh(ctx context.Context) (*Metadata, error) {
 		c.fetchedAt = time.Now()
 		c.mu.Unlock()
 
-		return cloneMetadata(&meta), nil
+		return &meta, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return v.(*Metadata), nil
+	// Clone per caller: singleflight hands the same value to every coalesced
+	// caller, so cloning here keeps Fetch's "returned Metadata is a copy" contract.
+	return cloneMetadata(v.(*Metadata)), nil
 }
