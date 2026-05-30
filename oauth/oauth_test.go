@@ -468,12 +468,12 @@ func TestTokenIsValid(t *testing.T) {
 }
 
 func TestOAuthError(t *testing.T) {
-	err := &Error{Code: "invalid_grant", Description: "Token expired"}
+	err := &Error{Code: ErrCodeInvalidGrant, Description: "Token expired"}
 	if err.Error() != "oauth: invalid_grant: Token expired" {
 		t.Errorf("unexpected error: %s", err.Error())
 	}
 
-	err2 := &Error{Code: "server_error"}
+	err2 := &Error{Code: ErrCodeServerError}
 	if err2.Error() != "oauth: server_error" {
 		t.Errorf("unexpected error: %s", err2.Error())
 	}

@@ -259,7 +259,7 @@ func RunAuthCodeFlow(
 			handled = true
 			if r.URL.Query().Get("state") != state {
 				errCh <- &oauth.Error{
-					Code:        "invalid_state",
+					Code:        oauth.ErrCodeInvalidState,
 					Description: "State parameter mismatch",
 				}
 				fmt.Fprint(w, htmlStateError)

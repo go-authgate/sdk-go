@@ -68,8 +68,9 @@ const (
 // PKCEMethodS256 is the SHA-256 PKCE code-challenge method (RFC 7636 §4.3).
 const PKCEMethodS256 = "S256"
 
-// OAuth 2.0 error codes used in error responses
-// (RFC 6749 §5.2, RFC 6750 §3.1, RFC 8628 §3.5).
+// Error codes used in error responses. Most are RFC-defined OAuth 2.0 codes
+// (RFC 6749 §5.2 & §4.1.2.1, RFC 6750 §3.1, RFC 8628 §3.5); ErrCodeInvalidState
+// is an SDK-defined extension (see its doc comment below).
 const (
 	// ErrCodeAuthorizationPending signals the user has not yet completed device authorization (RFC 8628 §3.5).
 	ErrCodeAuthorizationPending = "authorization_pending"
@@ -83,6 +84,18 @@ const (
 	ErrCodeInvalidGrant = "invalid_grant"
 	// ErrCodeInvalidToken indicates the access token is invalid, expired, or revoked (RFC 6750 §3.1).
 	ErrCodeInvalidToken = "invalid_token"
+	// ErrCodeInvalidRequest is the RFC 6749 §5.2 "invalid_request" code. This SDK
+	// also reuses it for local precondition failures such as an endpoint that has
+	// not been configured.
+	ErrCodeInvalidRequest = "invalid_request"
+	// ErrCodeInvalidState is an SDK-defined (non-standard) code signalling that an
+	// authorization-callback state parameter did not match the expected value
+	// (CSRF protection). It is not defined by the OAuth RFCs.
+	ErrCodeInvalidState = "invalid_state"
+	// ErrCodeServerError indicates an unexpected server-side condition, or a local
+	// failure handling the server's response (e.g., an unreadable or oversized error
+	// body), prevented fulfilling the request (RFC 6749 §4.1.2.1).
+	ErrCodeServerError = "server_error"
 )
 
 // Token represents an OAuth 2.0 token response (RFC 6749 §5.1).
@@ -248,7 +261,7 @@ func (c *Client) Endpoints() Endpoints {
 func (c *Client) RequestDeviceCode(ctx context.Context, scopes []string) (*DeviceAuth, error) {
 	if c.endpoints.DeviceAuthorizationURL == "" {
 		return nil, &Error{
-			Code:        "invalid_request",
+			Code:        ErrCodeInvalidRequest,
 			Description: "device authorization endpoint not configured",
 		}
 	}
@@ -330,7 +343,10 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 // Revoke revokes a token (RFC 7009).
 func (c *Client) Revoke(ctx context.Context, token string) error {
 	if c.endpoints.RevocationURL == "" {
-		return &Error{Code: "invalid_request", Description: "revocation endpoint not configured"}
+		return &Error{
+			Code:        ErrCodeInvalidRequest,
+			Description: "revocation endpoint not configured",
+		}
 	}
 
 	data := url.Values{
@@ -358,7 +374,7 @@ func (c *Client) Revoke(ctx context.Context, token string) error {
 func (c *Client) Introspect(ctx context.Context, token string) (*IntrospectionResult, error) {
 	if c.endpoints.IntrospectionURL == "" {
 		return nil, &Error{
-			Code:        "invalid_request",
+			Code:        ErrCodeInvalidRequest,
 			Description: "introspection endpoint not configured",
 		}
 	}
@@ -381,7 +397,10 @@ func (c *Client) Introspect(ctx context.Context, token string) (*IntrospectionRe
 // UserInfo fetches user information from the UserInfo endpoint (OIDC Core 1.0 §5.3).
 func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
 	if c.endpoints.UserinfoURL == "" {
-		return nil, &Error{Code: "invalid_request", Description: "userinfo endpoint not configured"}
+		return nil, &Error{
+			Code:        ErrCodeInvalidRequest,
+			Description: "userinfo endpoint not configured",
+		}
 	}
 
 	var info UserInfo
@@ -395,7 +414,7 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*TokenInfo, error) {
 	if c.endpoints.TokenInfoURL == "" {
 		return nil, &Error{
-			Code:        "invalid_request",
+			Code:        ErrCodeInvalidRequest,
 			Description: "tokeninfo endpoint not configured",
 		}
 	}
@@ -440,7 +459,10 @@ func (c *Client) getJSON(ctx context.Context, endpoint, accessToken, op string, 
 // tokenRequest sends a token request and parses the response.
 func (c *Client) tokenRequest(ctx context.Context, data url.Values) (*Token, error) {
 	if c.endpoints.TokenURL == "" {
-		return nil, &Error{Code: "invalid_request", Description: "token endpoint not configured"}
+		return nil, &Error{
+			Code:        ErrCodeInvalidRequest,
+			Description: "token endpoint not configured",
+		}
 	}
 
 	var tok Token
@@ -484,7 +506,7 @@ func parseErrorResponse(resp *http.Response) error {
 	body, err := io.ReadAll(lr)
 	if err != nil {
 		return &Error{
-			Code:        "server_error",
+			Code:        ErrCodeServerError,
 			Description: "failed to read error response",
 			StatusCode:  resp.StatusCode,
 		}
@@ -495,7 +517,7 @@ func parseErrorResponse(resp *http.Response) error {
 	// truncated body in the error description.
 	if lr.N == 0 {
 		return &Error{
-			Code:        "server_error",
+			Code:        ErrCodeServerError,
 			Description: "error response body exceeds size limit",
 			StatusCode:  resp.StatusCode,
 		}

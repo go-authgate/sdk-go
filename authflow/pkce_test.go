@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"testing"
+
+	"github.com/go-authgate/sdk-go/oauth"
 )
 
 func TestNewPKCE(t *testing.T) {
@@ -12,8 +14,8 @@ func TestNewPKCE(t *testing.T) {
 		t.Fatalf("NewPKCE: %v", err)
 	}
 
-	if pkce.Method != "S256" {
-		t.Errorf("Method = %q, want %q", pkce.Method, "S256")
+	if pkce.Method != oauth.PKCEMethodS256 {
+		t.Errorf("Method = %q, want %q", pkce.Method, oauth.PKCEMethodS256)
 	}
 
 	if len(pkce.Verifier) < 43 {

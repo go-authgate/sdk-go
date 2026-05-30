@@ -22,7 +22,7 @@ type contextKey struct{}
 const clientSubjectPrefix = "client:"
 
 func newTokenNotActiveErr() *oauth.Error {
-	return &oauth.Error{Code: "invalid_token", Description: "Token is not active"}
+	return &oauth.Error{Code: oauth.ErrCodeInvalidToken, Description: "Token is not active"}
 }
 
 // TokenInfo holds validated token information extracted from the request.
@@ -111,7 +111,7 @@ type errorResponse struct {
 func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 	var oauthErr *oauth.Error
 	if errors.As(err, &oauthErr) {
-		if oauthErr.Code == "server_error" {
+		if oauthErr.Code == oauth.ErrCodeServerError {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{
 				Error:       oauthErr.Code,
 				Description: oauthErr.Description,
@@ -130,7 +130,7 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 
 	// Non-OAuth errors are server-side issues
 	writeJSON(w, http.StatusInternalServerError, errorResponse{
-		Error:       "server_error",
+		Error:       oauth.ErrCodeServerError,
 		Description: "Internal server error",
 	})
 }
@@ -230,7 +230,10 @@ func extractBearerToken(r *http.Request) string {
 
 func validateToken(ctx context.Context, cfg *config, token string) (*TokenInfo, error) {
 	if cfg.client == nil {
-		return nil, &oauth.Error{Code: "server_error", Description: "OAuth client not configured"}
+		return nil, &oauth.Error{
+			Code:        oauth.ErrCodeServerError,
+			Description: "OAuth client not configured",
+		}
 	}
 
 	switch cfg.mode {
