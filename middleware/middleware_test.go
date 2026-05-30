@@ -346,6 +346,68 @@ func TestRequireScope(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
+
+	// An empty required scope must fail closed: strings.Fields never yields
+	// "", so the token can never carry it.
+	handler3 := RequireScope("")(inner)
+	req = httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	rec = httptest.NewRecorder()
+	handler3.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("empty required scope: status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestTokenInfo_firstMissingScope(t *testing.T) {
+	tests := []struct {
+		name        string
+		tokenScope  string
+		required    []string
+		wantScope   string
+		wantMissing bool
+	}{
+		{
+			name:        "no required scopes",
+			tokenScope:  "read write",
+			required:    nil,
+			wantScope:   "",
+			wantMissing: false,
+		},
+		{
+			name:        "all present",
+			tokenScope:  "read write admin",
+			required:    []string{"read", "admin"},
+			wantScope:   "",
+			wantMissing: false,
+		},
+		{
+			name:        "first missing reported",
+			tokenScope:  "read",
+			required:    []string{"write", "admin"},
+			wantScope:   "write",
+			wantMissing: true,
+		},
+		{
+			name:        "empty required scope fails closed",
+			tokenScope:  "read write",
+			required:    []string{""},
+			wantScope:   "",
+			wantMissing: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &TokenInfo{Scope: tt.tokenScope}
+			scope, missing := info.firstMissingScope(tt.required)
+			if scope != tt.wantScope || missing != tt.wantMissing {
+				t.Errorf(
+					"firstMissingScope() = (%q, %t), want (%q, %t)",
+					scope, missing, tt.wantScope, tt.wantMissing,
+				)
+			}
+		})
+	}
 }
 
 func TestTokenInfo_HasScope(t *testing.T) {
