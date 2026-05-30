@@ -39,6 +39,21 @@ func (ti *TokenInfo) HasScope(scope string) bool {
 	return slices.Contains(strings.Fields(ti.Scope), scope)
 }
 
+// firstMissingScope returns the first required scope absent from the token, or
+// "" if all are present. It splits the token scope once instead of per scope.
+func (ti *TokenInfo) firstMissingScope(required []string) string {
+	if len(required) == 0 {
+		return ""
+	}
+	granted := strings.Fields(ti.Scope)
+	for _, scope := range required {
+		if !slices.Contains(granted, scope) {
+			return scope
+		}
+	}
+	return ""
+}
+
 // TokenInfoFromContext extracts the validated token info from the request context.
 func TokenInfoFromContext(ctx context.Context) (*TokenInfo, bool) {
 	info, ok := ctx.Value(contextKey{}).(*TokenInfo)
@@ -179,11 +194,9 @@ func BearerAuth(opts ...Option) func(http.Handler) http.Handler {
 			}
 
 			// Check required scopes
-			for _, scope := range cfg.requiredScopes {
-				if !info.HasScope(scope) {
-					writeInsufficientScope(w, scope)
-					return
-				}
+			if scope := info.firstMissingScope(cfg.requiredScopes); scope != "" {
+				writeInsufficientScope(w, scope)
+				return
 			}
 
 			ctx := context.WithValue(r.Context(), contextKey{}, info)
@@ -206,11 +219,9 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 				return
 			}
 
-			for _, scope := range scopes {
-				if !info.HasScope(scope) {
-					writeInsufficientScope(w, scope)
-					return
-				}
+			if scope := info.firstMissingScope(scopes); scope != "" {
+				writeInsufficientScope(w, scope)
+				return
 			}
 
 			next.ServeHTTP(w, r)
