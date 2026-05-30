@@ -119,11 +119,7 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 			})
 			return
 		case oauth.ErrCodeInsufficientScope:
-			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
-			writeJSON(w, http.StatusForbidden, errorResponse{
-				Error:       oauthErr.Code,
-				Description: oauthErr.Description,
-			})
+			writeInsufficientScope(w, oauthErr.Description)
 			return
 		}
 
@@ -149,11 +145,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeInsufficientScope(w http.ResponseWriter, scope string) {
+// writeInsufficientScope writes a 403 insufficient_scope response with the
+// RFC 6750 §3 WWW-Authenticate challenge.
+func writeInsufficientScope(w http.ResponseWriter, description string) {
 	w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
 	writeJSON(w, http.StatusForbidden, errorResponse{
 		Error:       oauth.ErrCodeInsufficientScope,
-		Description: "Token does not have required scope: " + scope,
+		Description: description,
 	})
 }
 
@@ -219,7 +217,7 @@ func RequireScope(scopes ...string) func(http.Handler) http.Handler {
 
 			for _, scope := range scopes {
 				if !info.HasScope(scope) {
-					writeInsufficientScope(w, scope)
+					writeInsufficientScope(w, "Token does not have required scope: "+scope)
 					return
 				}
 			}
