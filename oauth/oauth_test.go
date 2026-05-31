@@ -596,3 +596,80 @@ func TestResponseBodyExactlyAtBoundary(t *testing.T) {
 		t.Errorf("expected errResponseTooLarge, got: %v", err)
 	}
 }
+
+// TestConfidentialClientAuth verifies that every confidential-client request
+// carries client_id and client_secret. RefreshToken, ExchangeDeviceCode, and
+// Revoke previously omitted the secret (Revoke omitted client_id too), so a
+// client built with WithClientSecret could not refresh, complete the device
+// flow, or revoke against a server that requires client authentication.
+func TestConfidentialClientAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"ExchangeAuthCode", func(c *Client) error {
+			_, err := c.ExchangeAuthCode(context.Background(), "code", "uri", "verifier")
+			return err
+		}},
+		{"ExchangeDeviceCode", func(c *Client) error {
+			_, err := c.ExchangeDeviceCode(context.Background(), "dev-code")
+			return err
+		}},
+		{"ClientCredentials", func(c *Client) error {
+			_, err := c.ClientCredentials(context.Background(), nil)
+			return err
+		}},
+		{"RefreshToken", func(c *Client) error {
+			_, err := c.RefreshToken(context.Background(), "refresh")
+			return err
+		}},
+		{"Introspect", func(c *Client) error {
+			_, err := c.Introspect(context.Background(), "tok")
+			return err
+		}},
+		{"Revoke", func(c *Client) error {
+			return c.Revoke(context.Background(), "tok")
+		}},
+		{"RequestDeviceCode", func(c *Client) error {
+			_, err := c.RequestDeviceCode(context.Background(), nil)
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if err := r.ParseForm(); err != nil {
+						t.Fatalf("ParseForm: %v", err)
+					}
+					if got := r.PostForm.Get("client_id"); got != "cid" {
+						t.Errorf("client_id = %q, want %q", got, "cid")
+					}
+					if got := r.PostForm.Get("client_secret"); got != "secret" {
+						t.Errorf("client_secret = %q, want %q", got, "secret")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"access_token": "a",
+						"token_type":   "Bearer",
+						"active":       true,
+					})
+				}),
+			)
+			t.Cleanup(server.Close)
+
+			client, err := NewClient("cid", Endpoints{
+				TokenURL:               server.URL + "/token",
+				RevocationURL:          server.URL + "/revoke",
+				IntrospectionURL:       server.URL + "/introspect",
+				DeviceAuthorizationURL: server.URL + "/device",
+			}, WithClientSecret("secret"))
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			if err := tt.call(client); err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+		})
+	}
+}

@@ -259,18 +259,44 @@ func (c *Client) Endpoints() Endpoints {
 	return c.endpoints
 }
 
-// RequestDeviceCode initiates a device authorization request (RFC 8628 §3.1).
-func (c *Client) RequestDeviceCode(ctx context.Context, scopes []string) (*DeviceAuth, error) {
-	if c.endpoints.DeviceAuthorizationURL == "" {
-		return nil, &Error{
+// setClientAuth attaches client-authentication parameters to a token or
+// token-management request. client_id is always sent; client_secret is added
+// only when one was configured via WithClientSecret (confidential clients).
+// Routing every request through this single helper keeps confidential-client
+// credentials from being silently dropped on an individual endpoint — the
+// per-method copy-paste it replaces is exactly what left RefreshToken,
+// ExchangeDeviceCode, and Revoke unauthenticated.
+func (c *Client) setClientAuth(data url.Values) {
+	data.Set("client_id", c.clientID)
+	if c.clientSecret != "" {
+		data.Set("client_secret", c.clientSecret)
+	}
+}
+
+// requireEndpoint returns an invalid_request *Error when endpoint is empty.
+// name is the human-readable label used in the error description (e.g.
+// "device authorization").
+func requireEndpoint(endpoint, name string) *Error {
+	if endpoint == "" {
+		return &Error{
 			Code:        ErrCodeInvalidRequest,
-			Description: "device authorization endpoint not configured",
+			Description: name + " endpoint not configured",
 		}
 	}
+	return nil
+}
 
-	data := url.Values{
-		"client_id": {c.clientID},
+// RequestDeviceCode initiates a device authorization request (RFC 8628 §3.1).
+func (c *Client) RequestDeviceCode(ctx context.Context, scopes []string) (*DeviceAuth, error) {
+	if err := requireEndpoint(
+		c.endpoints.DeviceAuthorizationURL,
+		"device authorization",
+	); err != nil {
+		return nil, err
 	}
+
+	data := url.Values{}
+	c.setClientAuth(data)
 	if len(scopes) > 0 {
 		data.Set("scope", strings.Join(scopes, " "))
 	}
@@ -287,7 +313,6 @@ func (c *Client) ExchangeDeviceCode(ctx context.Context, deviceCode string) (*To
 	data := url.Values{
 		"grant_type":  {GrantTypeDeviceCode},
 		"device_code": {deviceCode},
-		"client_id":   {c.clientID},
 	}
 
 	return c.tokenRequest(ctx, data)
@@ -302,14 +327,10 @@ func (c *Client) ExchangeAuthCode(
 		"grant_type":   {GrantTypeAuthorizationCode},
 		"code":         {code},
 		"redirect_uri": {redirectURI},
-		"client_id":    {c.clientID},
 	}
 
 	if codeVerifier != "" {
 		data.Set("code_verifier", codeVerifier)
-	}
-	if c.clientSecret != "" {
-		data.Set("client_secret", c.clientSecret)
 	}
 
 	return c.tokenRequest(ctx, data)
@@ -319,10 +340,6 @@ func (c *Client) ExchangeAuthCode(
 func (c *Client) ClientCredentials(ctx context.Context, scopes []string) (*Token, error) {
 	data := url.Values{
 		"grant_type": {GrantTypeClientCredentials},
-		"client_id":  {c.clientID},
-	}
-	if c.clientSecret != "" {
-		data.Set("client_secret", c.clientSecret)
 	}
 	if len(scopes) > 0 {
 		data.Set("scope", strings.Join(scopes, " "))
@@ -336,7 +353,6 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 	data := url.Values{
 		"grant_type":    {GrantTypeRefreshToken},
 		"refresh_token": {refreshToken},
-		"client_id":     {c.clientID},
 	}
 
 	return c.tokenRequest(ctx, data)
@@ -344,16 +360,14 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*Token,
 
 // Revoke revokes a token (RFC 7009).
 func (c *Client) Revoke(ctx context.Context, token string) error {
-	if c.endpoints.RevocationURL == "" {
-		return &Error{
-			Code:        ErrCodeInvalidRequest,
-			Description: "revocation endpoint not configured",
-		}
+	if err := requireEndpoint(c.endpoints.RevocationURL, "revocation"); err != nil {
+		return err
 	}
 
 	data := url.Values{
 		"token": {token},
 	}
+	c.setClientAuth(data)
 
 	resp, err := c.httpClient.Post(ctx, c.endpoints.RevocationURL,
 		retry.WithBody("application/x-www-form-urlencoded", strings.NewReader(data.Encode())),
@@ -374,20 +388,14 @@ func (c *Client) Revoke(ctx context.Context, token string) error {
 
 // Introspect introspects a token (RFC 7662).
 func (c *Client) Introspect(ctx context.Context, token string) (*IntrospectionResult, error) {
-	if c.endpoints.IntrospectionURL == "" {
-		return nil, &Error{
-			Code:        ErrCodeInvalidRequest,
-			Description: "introspection endpoint not configured",
-		}
+	if err := requireEndpoint(c.endpoints.IntrospectionURL, "introspection"); err != nil {
+		return nil, err
 	}
 
 	data := url.Values{
-		"token":     {token},
-		"client_id": {c.clientID},
+		"token": {token},
 	}
-	if c.clientSecret != "" {
-		data.Set("client_secret", c.clientSecret)
-	}
+	c.setClientAuth(data)
 
 	var result IntrospectionResult
 	if err := c.postForm(ctx, c.endpoints.IntrospectionURL, data, &result); err != nil {
@@ -398,11 +406,8 @@ func (c *Client) Introspect(ctx context.Context, token string) (*IntrospectionRe
 
 // UserInfo fetches user information from the UserInfo endpoint (OIDC Core 1.0 §5.3).
 func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
-	if c.endpoints.UserinfoURL == "" {
-		return nil, &Error{
-			Code:        ErrCodeInvalidRequest,
-			Description: "userinfo endpoint not configured",
-		}
+	if err := requireEndpoint(c.endpoints.UserinfoURL, "userinfo"); err != nil {
+		return nil, err
 	}
 
 	var info UserInfo
@@ -414,11 +419,8 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, e
 
 // TokenInfoRequest fetches token information from the tokeninfo endpoint.
 func (c *Client) TokenInfoRequest(ctx context.Context, accessToken string) (*TokenInfo, error) {
-	if c.endpoints.TokenInfoURL == "" {
-		return nil, &Error{
-			Code:        ErrCodeInvalidRequest,
-			Description: "tokeninfo endpoint not configured",
-		}
+	if err := requireEndpoint(c.endpoints.TokenInfoURL, "tokeninfo"); err != nil {
+		return nil, err
 	}
 
 	var info TokenInfo
@@ -460,12 +462,10 @@ func (c *Client) getJSON(ctx context.Context, endpoint, accessToken, op string, 
 
 // tokenRequest sends a token request and parses the response.
 func (c *Client) tokenRequest(ctx context.Context, data url.Values) (*Token, error) {
-	if c.endpoints.TokenURL == "" {
-		return nil, &Error{
-			Code:        ErrCodeInvalidRequest,
-			Description: "token endpoint not configured",
-		}
+	if err := requireEndpoint(c.endpoints.TokenURL, "token"); err != nil {
+		return nil, err
 	}
+	c.setClientAuth(data)
 
 	var tok Token
 	if err := c.postForm(ctx, c.endpoints.TokenURL, data, &tok); err != nil {
@@ -531,8 +531,18 @@ func parseErrorResponse(resp *http.Response) error {
 		return &oauthErr
 	}
 
+	// Body is not an OAuth-shaped error (no `error` field). Keep the raw body
+	// in the description, but for 5xx derive ErrCodeServerError so callers can
+	// still tell a server-side failure from a client/token error — otherwise a
+	// bare status-text Code (e.g. "Service Unavailable") slips past the
+	// middleware's transient-vs-invalid check and a valid client is told its
+	// token is bad during an upstream outage.
+	code := http.StatusText(resp.StatusCode)
+	if resp.StatusCode >= http.StatusInternalServerError {
+		code = ErrCodeServerError
+	}
 	return &Error{
-		Code:        http.StatusText(resp.StatusCode),
+		Code:        code,
 		Description: string(body),
 		StatusCode:  resp.StatusCode,
 	}

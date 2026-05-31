@@ -19,6 +19,12 @@ import (
 
 const defaultExpiryDelta = 30 * time.Second
 
+// fetchTimeout caps the singleflight client-credentials round-trip. Because the
+// shared fetch is detached from the first caller's context (see Token), this
+// bound is what stops a hung server from making the shared goroutine outlive
+// every caller. Mirrors authflow.refreshTimeout.
+const fetchTimeout = 30 * time.Second
+
 // Option configures a TokenSource.
 type Option func(*TokenSource)
 
@@ -74,9 +80,17 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 	}
 	ts.mu.RUnlock()
 
-	// Slow path: use singleflight to coalesce concurrent refresh requests.
-	// Only one goroutine executes the func; others wait for its result.
-	v, err, _ := ts.group.Do("token", func() (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Slow path: coalesce concurrent fetches via singleflight. DoChan (not Do)
+	// plus the select below lets each caller honor its own cancellation, and
+	// context.WithoutCancel detaches the shared fetch from the first caller's
+	// ctx so one caller's cancellation cannot fail every waiter. The bounded
+	// fetchTimeout replaces the deadline that WithoutCancel strips. Mirrors
+	// authflow.TokenSource.Token.
+	ch := ts.group.DoChan("token", func() (any, error) {
 		// Re-check cache: another goroutine's singleflight may have just
 		// populated it before this call started.
 		ts.mu.RLock()
@@ -87,8 +101,11 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 		}
 		ts.mu.RUnlock()
 
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		defer cancel()
+
 		// Network call happens outside any lock
-		token, fetchErr := ts.client.ClientCredentials(ctx, ts.scopes)
+		token, fetchErr := ts.client.ClientCredentials(fetchCtx, ts.scopes)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("clientcreds: fetch token: %w", fetchErr)
 		}
@@ -99,11 +116,16 @@ func (ts *TokenSource) Token(ctx context.Context) (*oauth.Token, error) {
 
 		return token, nil
 	})
-	if err != nil {
-		return nil, err
-	}
 
-	return v.(*oauth.Token), nil
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*oauth.Token), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // isValid reports whether the cached token is still usable.

@@ -741,6 +741,62 @@ func TestCheckBrowserAvailability(t *testing.T) {
 	_ = CheckBrowserAvailability()
 }
 
+// TestTokenSource_RefreshPreservesOmittedFields covers the carry-forward in
+// loadOrRefresh: RFC 6749 §6 lets the server omit refresh_token and scope from
+// a refresh response when unchanged, so a successful refresh must not erase the
+// stored refresh token (which would force re-authentication next cycle) or drop
+// the granted scope.
+func TestTokenSource_RefreshPreservesOmittedFields(t *testing.T) {
+	store := newStubStore()
+	store.data["test-client"] = credstore.Token{
+		AccessToken:  "expired",
+		RefreshToken: "keep-me",
+		Scope:        "openid profile",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+		ClientID:     "test-client",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Response intentionally omits refresh_token and scope.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "fresh-access",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := oauth.NewClient(
+		"test-client",
+		oauth.Endpoints{TokenURL: server.URL + "/token"},
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ts := NewTokenSource(client, WithStore(store))
+	tok, err := ts.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if tok.RefreshToken != "keep-me" {
+		t.Errorf("RefreshToken = %q, want %q (carried forward)", tok.RefreshToken, "keep-me")
+	}
+	if tok.Scope != "openid profile" {
+		t.Errorf("Scope = %q, want %q (carried forward)", tok.Scope, "openid profile")
+	}
+
+	saved, err := store.Load("test-client")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.RefreshToken != "keep-me" {
+		t.Errorf("saved RefreshToken = %q, want %q", saved.RefreshToken, "keep-me")
+	}
+}
+
 type testDeviceHandler struct {
 	onDisplay func(auth *oauth.DeviceAuth)
 }
