@@ -66,7 +66,16 @@ func NewStringKeyringStore(serviceName string) *KeyringStore[string] {
 	return NewKeyringStore[string](serviceName, StringCodec{})
 }
 
+// NewTokenEncryptedFileStore creates an EncryptedFileStore for Token values
+// using JSON encoding. The master key is stored in the OS keyring under
+// serviceName; the encrypted tokens are written to filePath.
+func NewTokenEncryptedFileStore(serviceName, filePath string) *EncryptedFileStore[Token] {
+	return NewEncryptedFileStore[Token](serviceName, filePath, JSONCodec[Token]{})
+}
+
 // DefaultTokenSecureStore creates a SecureStore for Token values with sensible defaults.
+// Tokens are AES-256-GCM-encrypted to filePath+".enc" with the master key in
+// the OS keyring; see DefaultSecureStore for details.
 func DefaultTokenSecureStore(
 	serviceName, filePath string,
 	opts ...SecureStoreOption[Token],

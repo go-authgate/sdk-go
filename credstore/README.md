@@ -5,8 +5,9 @@ Secure storage for OAuth tokens and arbitrary credentials, with OS keyring integ
 ## Features
 
 - **Generic Storage** — store `Token`, plain `string`, or any custom type
-- **OS Keyring Integration** — stores data in macOS Keychain, Linux Secret Service, or Windows Credential Manager
-- **Automatic Fallback** — falls back to file-based storage when keyring is unavailable
+- **Encrypted File Storage** — AES-256-GCM-encrypted data file with only a 32-byte master key in the OS keyring, so large tokens never hit keyring size limits (e.g. the Windows Credential Manager 2560-byte blob limit)
+- **OS Keyring Integration** — uses macOS Keychain, Linux Secret Service, or Windows Credential Manager
+- **Automatic Fallback** — falls back to plaintext file storage when keyring is unavailable
 - **Thread-Safe** — file locking with stale lock detection for concurrent access
 - **Atomic Writes** — uses temp file + rename pattern to prevent corruption
 - **Cross-Platform** — works on macOS, Linux, and Windows
@@ -106,7 +107,7 @@ if loaded.IsValid() {
 
 ### Listing Tokens
 
-`FileStore` implements the optional `Lister` interface:
+`FileStore` and `EncryptedFileStore` implement the optional `Lister` interface:
 
 ```go
 type Lister interface {
@@ -126,7 +127,7 @@ if lister, ok := store.(credstore.Lister); ok {
 }
 ```
 
-> Note: `*SecureStore` does **not** implement `Lister`. If you need listing, use `*FileStore` directly.
+> Note: `*SecureStore` does **not** implement `Lister`. If you need listing, use `*FileStore` or `*EncryptedFileStore` directly.
 
 ### FileStore
 
@@ -164,28 +165,64 @@ if store.Probe() {
 }
 ```
 
+> **⚠ Keyring size limits:** OS keyrings reject large payloads — Windows
+> Credential Manager caps blobs at 2560 bytes, and macOS/Linux backends have
+> limits too. Tokens with groups claims easily exceed that. For large values,
+> use `EncryptedFileStore` instead, which keeps only a 32-byte key in the
+> keyring.
+
+### EncryptedFileStore
+
+Stores values AES-256-GCM-encrypted in a JSON file. Only the 32-byte master key lives in the OS keyring (44 bytes base64-encoded — constant size, regardless of how large the stored values grow). The master key is generated automatically on first use. Implements `Store[T]`, `Lister`, and `Prober`.
+
+```go
+// Token store (convenience constructor)
+store := credstore.NewTokenEncryptedFileStore("my-app", "~/.config/my-app/tokens.enc")
+
+// Custom type with JSON encoding
+store := credstore.NewEncryptedFileStore[MyCredentials](
+  "my-app", "~/.config/my-app/creds.enc", credstore.JSONCodec[MyCredentials]{})
+
+// Logout flow: delete the data, then the master key
+_ = store.Delete("my-client-id")
+_ = store.DeleteMasterKey() // existing ciphertext becomes unreadable
+```
+
+The file layout is the same `{"data": {clientID: value}}` map as `FileStore`, but each value is `v1:base64(nonce || AES-256-GCM ciphertext)` (the `v1:` prefix versions the format for future algorithm migration). Files are written with `0600` permissions using file locking and atomic renames.
+
 ### SecureStore
 
-A composite store that automatically selects the best available backend. If the keyring is available (tested via `Probe()`), it uses the keyring; otherwise, it falls back to file storage.
+A composite store that automatically selects the best available backend. The default setup keeps payloads out of the keyring entirely:
+
+- **Keyring available** — data is AES-256-GCM-encrypted to `filePath + ".enc"` via `EncryptedFileStore`; the keyring holds only the 32-byte master key
+- **Keyring unavailable** (e.g. headless Linux) — falls back to plaintext file storage at `filePath`
 
 ```go
 // Quick setup with defaults (Token)
 store := credstore.DefaultTokenSecureStore("my-app", "/path/to/tokens.json")
 
 // Or configure manually
-kr := credstore.NewTokenKeyringStore("my-app")
+enc := credstore.NewTokenEncryptedFileStore("my-app", "/path/to/tokens.enc")
 file := credstore.NewTokenFileStore("/path/to/tokens.json")
-store := credstore.NewSecureStore(kr, file)
+store := credstore.NewSecureStore(enc, file)
 
 if store.UseKeyring() {
-  fmt.Println("Using OS keyring")
+  fmt.Println("Using encrypted file (master key in OS keyring)")
 } else {
-  fmt.Println("Using file storage")
+  fmt.Println("Using plaintext file storage")
 }
 
 // Generic setup with custom codec
 store := credstore.DefaultSecureStore[MyCredentials]("my-app", "/path/to/creds.json", credstore.JSONCodec[MyCredentials]{})
 ```
+
+> **⚠ Breaking change (storage layout):** `DefaultSecureStore` and
+> `DefaultTokenSecureStore` no longer write token payloads into the OS
+> keyring. With the keyring available, data now lives encrypted in
+> `filePath + ".enc"` and the keyring holds only the master key. Tokens
+> saved into the keyring by previous versions are not migrated — users
+> re-authenticate once. The plaintext fallback file at `filePath` is
+> unaffected.
 
 ### Codec
 

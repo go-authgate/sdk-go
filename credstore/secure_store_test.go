@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zalando/go-keyring"
 )
 
 // mockStore is a simple mock implementing Store[T] for testing.
@@ -190,6 +192,7 @@ func TestSecureStore_FallsBackWhenKrNotProber(t *testing.T) {
 }
 
 func TestDefaultTokenSecureStore(t *testing.T) {
+	keyring.MockInit() // avoid touching the real OS keyring
 	store := DefaultTokenSecureStore("test-service", t.TempDir()+"/tokens.json")
 	if store == nil {
 		t.Fatal("DefaultTokenSecureStore() returned nil")
