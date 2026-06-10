@@ -188,7 +188,7 @@ _ = store.Delete("my-client-id")
 _ = store.DeleteMasterKey() // existing ciphertext becomes unreadable
 ```
 
-The file layout is the same `{"data": {clientID: value}}` map as `FileStore`, but each value is `base64(nonce || AES-256-GCM ciphertext)`. Files are written with `0600` permissions using file locking and atomic renames.
+The file layout is the same `{"data": {clientID: value}}` map as `FileStore`, but each value is `v1:base64(nonce || AES-256-GCM ciphertext)` (the `v1:` prefix versions the format for future algorithm migration). Files are written with `0600` permissions using file locking and atomic renames.
 
 ### SecureStore
 

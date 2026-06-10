@@ -17,7 +17,7 @@ type BackendChangeFunc func(backend string)
 // Diagnostics is a point-in-time snapshot of SecureStore state.
 type Diagnostics struct {
 	Backend    string // active store's String() description
-	UseKeyring bool   // true if keyring is the active backend
+	UseKeyring bool   // true if the keyring-backed primary store is active
 	CanProbe   bool   // true if Refresh() can switch backends
 }
 
@@ -51,8 +51,9 @@ func DefaultSecureStore[T any](
 		opts...)
 }
 
-// SecureStore is a composite Store that tries the OS keyring first
-// and falls back to file-based storage if the keyring is unavailable.
+// SecureStore is a composite Store that tries the keyring-backed primary
+// store first and falls back to file-based storage if the keyring is
+// unavailable.
 // Both stores are retained so that Refresh() can switch between them.
 // All methods are safe for concurrent use.
 type SecureStore[T any] struct {

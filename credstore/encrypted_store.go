@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/zalando/go-keyring"
@@ -17,6 +18,10 @@ const masterKeySize = 32
 
 // masterKeyUser is the keyring account name under which the master key is stored.
 const masterKeyUser = "__authgate_master_key__"
+
+// sealedPrefix versions the on-disk encrypted value format so a future
+// algorithm change can be detected instead of guessed at.
+const sealedPrefix = "v1:"
 
 // masterKey manages a per-service AES-256 key held in the OS keyring.
 // Only the 44-byte base64-encoded key ever touches the keyring, which stays
@@ -29,40 +34,66 @@ type masterKey struct {
 	cached []byte
 }
 
-// get returns the AES-256 key from the keyring, generating and persisting a
-// new one on first use. The key is cached in memory after the first success.
-func (m *masterKey) get() ([]byte, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// loadLocked returns the cached or keyring-held master key. It returns
+// keyring.ErrNotFound unwrapped when no key exists yet so callers can
+// distinguish "no key" from "keyring unavailable". m.mu must be held.
+func (m *masterKey) loadLocked() ([]byte, error) {
 	if m.cached != nil {
 		return m.cached, nil
 	}
 
 	encoded, err := keyring.Get(m.serviceName, masterKeyUser)
-	if err == nil {
-		key, decodeErr := base64.StdEncoding.DecodeString(encoded)
-		if decodeErr != nil || len(key) != masterKeySize {
-			return nil, errors.New("corrupted master key in keyring")
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) {
+			return nil, err
 		}
-		m.cached = key
-		return key, nil
-	}
-	if !errors.Is(err, keyring.ErrNotFound) {
 		// e.g. Linux headless without Secret Service, or keyring locked.
 		return nil, fmt.Errorf("failed to read master key from keyring: %w", err)
 	}
 
+	key, decodeErr := base64.StdEncoding.DecodeString(encoded)
+	if decodeErr != nil || len(key) != masterKeySize {
+		return nil, errors.New("corrupted master key in keyring")
+	}
+	m.cached = key
+	return key, nil
+}
+
+// get returns the AES-256 key, generating and persisting a new one on first
+// use. The key is cached in memory after the first success.
+func (m *masterKey) get() ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key, err := m.loadLocked()
+	if err == nil {
+		return key, nil
+	}
+	if !errors.Is(err, keyring.ErrNotFound) {
+		return nil, err
+	}
+
 	// First use: generate and persist a new key.
-	key := make([]byte, masterKeySize)
+	key = make([]byte, masterKeySize)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("failed to generate master key: %w", err)
 	}
-	encoded = base64.StdEncoding.EncodeToString(key)
+	encoded := base64.StdEncoding.EncodeToString(key)
 	if err := keyring.Set(m.serviceName, masterKeyUser, encoded); err != nil {
 		return nil, fmt.Errorf("failed to store master key in keyring: %w", err)
 	}
 	m.cached = key
 	return key, nil
+}
+
+// available reports whether the keyring can serve the master key without
+// creating one: a cached or stored valid key counts, and so does a clean
+// not-found (the key is generated lazily on first Save or Load). A corrupted
+// key or an unreachable keyring does not.
+func (m *masterKey) available() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, err := m.loadLocked()
+	return err == nil || errors.Is(err, keyring.ErrNotFound)
 }
 
 // delete removes the master key from the keyring and drops the in-memory copy.
@@ -77,16 +108,25 @@ func (m *masterKey) delete() error {
 	return nil
 }
 
-// sealValue encrypts plaintext with AES-256-GCM and returns
-// base64(nonce || ciphertext).
-func sealValue(key []byte, plaintext string) (string, error) {
+// newGCM creates an AES-256-GCM AEAD for the given key.
+func newGCM(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+	return gcm, nil
+}
+
+// sealValue encrypts plaintext with AES-256-GCM and returns
+// "v1:" + base64(nonce || ciphertext).
+func sealValue(key []byte, plaintext string) (string, error) {
+	gcm, err := newGCM(key)
+	if err != nil {
+		return "", err
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
@@ -94,22 +134,22 @@ func sealValue(key []byte, plaintext string) (string, error) {
 	}
 	// Seal appends ciphertext+tag to nonce, so the stored value is self-contained.
 	sealed := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.StdEncoding.EncodeToString(sealed), nil
+	return sealedPrefix + base64.StdEncoding.EncodeToString(sealed), nil
 }
 
 // openValue decrypts a value produced by sealValue.
 func openValue(key []byte, encoded string) (string, error) {
-	data, err := base64.StdEncoding.DecodeString(encoded)
+	rest, ok := strings.CutPrefix(encoded, sealedPrefix)
+	if !ok {
+		return "", errors.New("unrecognized encrypted value format")
+	}
+	data, err := base64.StdEncoding.DecodeString(rest)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode encrypted value: %w", err)
 	}
-	block, err := aes.NewCipher(key)
+	gcm, err := newGCM(key)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
+		return "", err
 	}
 	if len(data) < gcm.NonceSize() {
 		return "", errors.New("encrypted value too short")
@@ -189,11 +229,13 @@ func NewEncryptedFileStore[T any](
 	}
 }
 
-// Probe reports whether the keyring-held master key is accessible,
-// generating and persisting it on first use.
+// Probe reports whether the OS keyring can serve the master key. It is
+// read-only: the key itself is generated lazily on the first Save or Load.
+// Once the key is cached in memory, Probe keeps reporting true even if the
+// keyring later becomes unavailable, because the store remains operational
+// with the cached key.
 func (e *EncryptedFileStore[T]) Probe() bool {
-	_, err := e.key.get()
-	return err == nil
+	return e.key.available()
 }
 
 // Load loads and decrypts data for the given client ID.
