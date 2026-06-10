@@ -201,6 +201,13 @@ A composite store that automatically selects the best available backend. The def
 // Quick setup with defaults (Token)
 store := credstore.DefaultTokenSecureStore("my-app", "/path/to/tokens.json")
 
+// Or let the SDK pick a conventional, OS-appropriate path
+path, err := credstore.DefaultStorePath("my-app", "tokens.json")
+if err != nil {
+  panic(err)
+}
+store := credstore.DefaultTokenSecureStore("my-app", path)
+
 // Or configure manually
 enc := credstore.NewTokenEncryptedFileStore("my-app", "/path/to/tokens.enc")
 file := credstore.NewTokenFileStore("/path/to/tokens.json")
@@ -223,6 +230,23 @@ store := credstore.DefaultSecureStore[MyCredentials]("my-app", "/path/to/creds.j
 > saved into the keyring by previous versions are not migrated — users
 > re-authenticate once. The plaintext fallback file at `filePath` is
 > unaffected.
+
+### Default Paths
+
+`DefaultStorePath` returns a conventional, OS-appropriate file path —
+`filepath.Join(os.UserConfigDir(), appName, fileName)` — so you don't have to
+hard-code locations or expand `~` yourself:
+
+```go
+path, err := credstore.DefaultStorePath("my-app", "tokens.json")
+// macOS:   ~/Library/Application Support/my-app/tokens.json
+// Linux:   $XDG_CONFIG_HOME/my-app/tokens.json (else ~/.config/my-app/tokens.json)
+// Windows: %AppData%\my-app\tokens.json
+```
+
+Parent directories are not created by this helper; the file-backed stores create
+them on first `Save`. With keyring available, `DefaultTokenSecureStore` encrypts
+to `path + ".enc"` (see [SecureStore](#securestore)).
 
 ### Codec
 
