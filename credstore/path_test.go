@@ -25,6 +25,29 @@ func TestDefaultStorePath(t *testing.T) {
 	}
 }
 
+func TestDefaultTokenStorePath(t *testing.T) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		t.Skipf("user config dir unavailable: %v", err)
+	}
+
+	got, err := credstore.DefaultTokenStorePath("my-app")
+	if err != nil {
+		t.Fatalf("DefaultTokenStorePath() error = %v", err)
+	}
+
+	want := filepath.Join(dir, "my-app", credstore.DefaultTokenFileName)
+	if got != want {
+		t.Errorf("DefaultTokenStorePath() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultTokenStorePath_EmptyAppName(t *testing.T) {
+	if _, err := credstore.DefaultTokenStorePath(""); err == nil {
+		t.Error("DefaultTokenStorePath(\"\") error = nil, want error")
+	}
+}
+
 func TestDefaultStorePath_Validation(t *testing.T) {
 	tests := []struct {
 		name     string

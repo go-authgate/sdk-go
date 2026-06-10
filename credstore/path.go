@@ -38,3 +38,19 @@ func DefaultStorePath(appName, fileName string) (string, error) {
 	}
 	return filepath.Join(dir, appName, fileName), nil
 }
+
+// DefaultTokenFileName is the conventional file name used by DefaultTokenStorePath.
+const DefaultTokenFileName = "tokens.json"
+
+// DefaultTokenStorePath is a shorthand for DefaultStorePath(appName,
+// DefaultTokenFileName) — the conventional path for an app's token file. Pass
+// the result straight into DefaultTokenSecureStore:
+//
+//	path, err := credstore.DefaultTokenStorePath("my-app")
+//	if err != nil {
+//		return err
+//	}
+//	store := credstore.DefaultTokenSecureStore("my-app", path)
+func DefaultTokenStorePath(appName string) (string, error) {
+	return DefaultStorePath(appName, DefaultTokenFileName)
+}

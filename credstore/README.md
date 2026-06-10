@@ -244,9 +244,18 @@ path, err := credstore.DefaultStorePath("my-app", "tokens.json")
 // Windows: %AppData%\my-app\tokens.json
 ```
 
-Parent directories are not created by this helper; the file-backed stores create
-them on first `Save`. With keyring available, `DefaultTokenSecureStore` encrypts
-to `path + ".enc"` (see [SecureStore](#securestore)).
+For the common token case, `DefaultTokenStorePath` is a shorthand that fixes the
+file name to `tokens.json` (exported as `DefaultTokenFileName`):
+
+```go
+path, err := credstore.DefaultTokenStorePath("my-app")
+// => <UserConfigDir>/my-app/tokens.json
+store := credstore.DefaultTokenSecureStore("my-app", path)
+```
+
+Parent directories are not created by these helpers; the file-backed stores
+create them on first `Save`. With keyring available, `DefaultTokenSecureStore`
+encrypts to `path + ".enc"` (see [SecureStore](#securestore)).
 
 ### Codec
 
