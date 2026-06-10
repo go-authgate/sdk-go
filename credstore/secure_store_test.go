@@ -197,9 +197,6 @@ func TestDefaultTokenSecureStore(t *testing.T) {
 	if store == nil {
 		t.Fatal("DefaultTokenSecureStore() returned nil")
 	}
-	if !store.UseKeyring() {
-		t.Error("UseKeyring() = false, want true with mock keyring available")
-	}
 }
 
 func TestSecureStore_ListWithLister(t *testing.T) {

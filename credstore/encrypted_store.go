@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
-	"github.com/zalando/go-keyring"
 )
 
 // masterKeySize is the AES-256 key length in bytes.
@@ -23,89 +21,98 @@ const masterKeyUser = "__authgate_master_key__"
 // algorithm change can be detected instead of guessed at.
 const sealedPrefix = "v1:"
 
-// masterKey manages a per-service AES-256 key held in the OS keyring.
-// Only the 44-byte base64-encoded key ever touches the keyring, which stays
-// far below the Windows Credential Manager 2560-byte blob limit and the
-// macOS Keychain / Linux Secret Service item size limits.
+// masterKey manages a per-service AES-256 key held in the OS keyring and
+// caches the derived AEAD in memory. See EncryptedFileStore for why only the
+// key lives in the keyring.
 type masterKey struct {
-	serviceName string
+	store *KeyringStore[string]
 
-	mu     sync.Mutex
-	cached []byte
+	mu   sync.Mutex
+	aead cipher.AEAD // cached after the first successful load or create
 }
 
-// loadLocked returns the cached or keyring-held master key. It returns
-// keyring.ErrNotFound unwrapped when no key exists yet so callers can
-// distinguish "no key" from "keyring unavailable". m.mu must be held.
-func (m *masterKey) loadLocked() ([]byte, error) {
-	if m.cached != nil {
-		return m.cached, nil
+// loadLocked returns the cached or keyring-held AEAD. It returns ErrNotFound
+// unwrapped when no key exists yet so callers can distinguish "no key" from
+// "keyring unavailable". m.mu must be held.
+func (m *masterKey) loadLocked() (cipher.AEAD, error) {
+	if m.aead != nil {
+		return m.aead, nil
 	}
 
-	encoded, err := keyring.Get(m.serviceName, masterKeyUser)
+	encoded, err := m.store.Load(masterKeyUser)
 	if err != nil {
-		if errors.Is(err, keyring.ErrNotFound) {
+		if errors.Is(err, ErrNotFound) {
 			return nil, err
 		}
 		// e.g. Linux headless without Secret Service, or keyring locked.
-		return nil, fmt.Errorf("failed to read master key from keyring: %w", err)
+		return nil, fmt.Errorf("failed to read master key: %w", err)
 	}
 
 	key, decodeErr := base64.StdEncoding.DecodeString(encoded)
 	if decodeErr != nil || len(key) != masterKeySize {
 		return nil, errors.New("corrupted master key in keyring")
 	}
-	m.cached = key
-	return key, nil
+	return m.cacheLocked(key)
 }
 
-// get returns the AES-256 key, generating and persisting a new one on first
-// use. The key is cached in memory after the first success.
-func (m *masterKey) get() ([]byte, error) {
+// cacheLocked builds the AEAD for key and caches it. m.mu must be held.
+func (m *masterKey) cacheLocked(key []byte) (cipher.AEAD, error) {
+	aead, err := newGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	m.aead = aead
+	return aead, nil
+}
+
+// load returns the AEAD without ever creating a key, so decryption paths
+// cannot mint a key that has no chance of opening existing ciphertext.
+func (m *masterKey) load() (cipher.AEAD, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key, err := m.loadLocked()
+	return m.loadLocked()
+}
+
+// get returns the AEAD, generating and persisting a new key on first use.
+func (m *masterKey) get() (cipher.AEAD, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	aead, err := m.loadLocked()
 	if err == nil {
-		return key, nil
+		return aead, nil
 	}
-	if !errors.Is(err, keyring.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 
 	// First use: generate and persist a new key.
-	key = make([]byte, masterKeySize)
+	key := make([]byte, masterKeySize)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("failed to generate master key: %w", err)
 	}
-	encoded := base64.StdEncoding.EncodeToString(key)
-	if err := keyring.Set(m.serviceName, masterKeyUser, encoded); err != nil {
-		return nil, fmt.Errorf("failed to store master key in keyring: %w", err)
+	if err := m.store.Save(masterKeyUser, base64.StdEncoding.EncodeToString(key)); err != nil {
+		return nil, fmt.Errorf("failed to store master key: %w", err)
 	}
-	m.cached = key
-	return key, nil
+	return m.cacheLocked(key)
 }
 
 // available reports whether the keyring can serve the master key without
 // creating one: a cached or stored valid key counts, and so does a clean
-// not-found (the key is generated lazily on first Save or Load). A corrupted
-// key or an unreachable keyring does not.
+// not-found (the key is generated lazily on first Save). A corrupted key or
+// an unreachable keyring does not.
 func (m *masterKey) available() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, err := m.loadLocked()
-	return err == nil || errors.Is(err, keyring.ErrNotFound)
+	return err == nil || errors.Is(err, ErrNotFound)
 }
 
 // delete removes the master key from the keyring and drops the in-memory copy.
 func (m *masterKey) delete() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.cached = nil
-	err := keyring.Delete(m.serviceName, masterKeyUser)
-	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
-		return fmt.Errorf("failed to delete master key from keyring: %w", err)
-	}
-	return nil
+	m.aead = nil
+	return m.store.Delete(masterKeyUser)
 }
 
 // newGCM creates an AES-256-GCM AEAD for the given key.
@@ -123,22 +130,18 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 
 // sealValue encrypts plaintext with AES-256-GCM and returns
 // "v1:" + base64(nonce || ciphertext).
-func sealValue(key []byte, plaintext string) (string, error) {
-	gcm, err := newGCM(key)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, gcm.NonceSize())
+func sealValue(aead cipher.AEAD, plaintext string) (string, error) {
+	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", fmt.Errorf("failed to generate nonce: %w", err)
 	}
 	// Seal appends ciphertext+tag to nonce, so the stored value is self-contained.
-	sealed := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	sealed := aead.Seal(nonce, nonce, []byte(plaintext), nil)
 	return sealedPrefix + base64.StdEncoding.EncodeToString(sealed), nil
 }
 
 // openValue decrypts a value produced by sealValue.
-func openValue(key []byte, encoded string) (string, error) {
+func openValue(aead cipher.AEAD, encoded string) (string, error) {
 	rest, ok := strings.CutPrefix(encoded, sealedPrefix)
 	if !ok {
 		return "", errors.New("unrecognized encrypted value format")
@@ -147,15 +150,11 @@ func openValue(key []byte, encoded string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to decode encrypted value: %w", err)
 	}
-	gcm, err := newGCM(key)
-	if err != nil {
-		return "", err
-	}
-	if len(data) < gcm.NonceSize() {
+	if len(data) < aead.NonceSize() {
 		return "", errors.New("encrypted value too short")
 	}
-	nonce, ciphertext := data[:gcm.NonceSize()], data[gcm.NonceSize():]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	nonce, ciphertext := data[:aead.NonceSize()], data[aead.NonceSize():]
+	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		// Wrong key or tampered value — GCM authentication failed.
 		return "", fmt.Errorf("failed to decrypt value (key mismatch or tampering): %w", err)
@@ -172,27 +171,31 @@ type encryptedCodec[T any] struct {
 
 // Encode encodes v with the inner codec and encrypts the result.
 func (c encryptedCodec[T]) Encode(v T) (string, error) {
+	aead, err := c.key.get()
+	if err != nil {
+		return "", err
+	}
 	plaintext, err := c.inner.Encode(v)
 	if err != nil {
 		return "", err
 	}
-	key, err := c.key.get()
-	if err != nil {
-		return "", err
-	}
-	return sealValue(key, plaintext)
+	return sealValue(aead, plaintext)
 }
 
 // Decode decrypts s and decodes the plaintext with the inner codec.
 func (c encryptedCodec[T]) Decode(s string) (T, error) {
-	key, err := c.key.get()
+	var zero T
+	aead, err := c.key.load()
 	if err != nil {
-		var zero T
+		if errors.Is(err, ErrNotFound) {
+			// Deliberately not wrapping ErrNotFound: the value exists but
+			// cannot be decrypted, which must not read as "no data stored".
+			return zero, errors.New("cannot decrypt stored value: master key not found in keyring")
+		}
 		return zero, err
 	}
-	plaintext, err := openValue(key, s)
+	plaintext, err := openValue(aead, s)
 	if err != nil {
-		var zero T
 		return zero, err
 	}
 	return c.inner.Decode(plaintext)
@@ -222,7 +225,7 @@ func NewEncryptedFileStore[T any](
 	if codec == nil {
 		panic("credstore: NewEncryptedFileStore called with nil codec")
 	}
-	key := &masterKey{serviceName: serviceName}
+	key := &masterKey{store: NewStringKeyringStore(serviceName)}
 	return &EncryptedFileStore[T]{
 		file: NewFileStore[T](filePath, encryptedCodec[T]{inner: codec, key: key}),
 		key:  key,
@@ -230,10 +233,10 @@ func NewEncryptedFileStore[T any](
 }
 
 // Probe reports whether the OS keyring can serve the master key. It is
-// read-only: the key itself is generated lazily on the first Save or Load.
-// Once the key is cached in memory, Probe keeps reporting true even if the
-// keyring later becomes unavailable, because the store remains operational
-// with the cached key.
+// read-only: the key itself is generated lazily on the first Save. Once the
+// key is cached in memory, Probe keeps reporting true even if the keyring
+// later becomes unavailable, because the store remains operational with the
+// cached key.
 func (e *EncryptedFileStore[T]) Probe() bool {
 	return e.key.available()
 }
@@ -273,7 +276,7 @@ func (e *EncryptedFileStore[T]) FilePath() string {
 
 // ServiceName returns the keyring service name holding the master key.
 func (e *EncryptedFileStore[T]) ServiceName() string {
-	return e.key.serviceName
+	return e.key.store.ServiceName()
 }
 
 // String returns a description of this store.

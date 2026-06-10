@@ -7,27 +7,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-authgate/sdk-go/credstore"
 	"github.com/zalando/go-keyring"
 )
 
-// keyringMasterKeyUser mirrors the unexported account name under which
-// EncryptedFileStore persists its master key in the keyring.
-const keyringMasterKeyUser = "__authgate_master_key__"
-
 // newLargeTestToken builds a token whose access token is several KB,
 // mimicking real JWTs with large groups claims that exceed the Windows
 // Credential Manager 2560-byte blob limit.
 func newLargeTestToken(clientID string) credstore.Token {
-	return credstore.Token{
-		AccessToken:  "header." + strings.Repeat("groups-claim-payload-", 300) + ".sig",
-		RefreshToken: "refresh-" + clientID,
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(1 * time.Hour).Truncate(time.Second),
-		ClientID:     clientID,
-	}
+	tok := newTestToken(clientID)
+	tok.AccessToken = "header." + strings.Repeat("groups-claim-payload-", 300) + ".sig"
+	return tok
 }
 
 func newTestEncryptedStore(t *testing.T) (*credstore.EncryptedFileStore[credstore.Token], string) {
@@ -95,7 +86,7 @@ func TestEncryptedFileStore_KeyringHoldsOnlySmallMasterKey(t *testing.T) {
 
 	// Only the 44-byte base64 master key may live in the keyring —
 	// well under the Windows Credential Manager 2560-byte blob limit.
-	encoded, err := keyring.Get("test-service", keyringMasterKeyUser)
+	encoded, err := keyring.Get("test-service", credstore.MasterKeyUser)
 	if err != nil {
 		t.Fatalf("keyring.Get(master key) error = %v", err)
 	}
@@ -186,8 +177,8 @@ func TestEncryptedFileStore_DeleteMasterKeyInvalidatesData(t *testing.T) {
 		t.Fatalf("DeleteMasterKey() error = %v", err)
 	}
 
-	// A fresh key is generated on the next access, so the old ciphertext
-	// must fail GCM authentication rather than decrypt to garbage.
+	// Load must fail with a decrypt error rather than return garbage or
+	// mint a fresh key that could never open the old ciphertext.
 	_, err := store.Load("test-client")
 	if err == nil {
 		t.Fatal("Load() after DeleteMasterKey() succeeded, want decrypt error")

@@ -34,11 +34,9 @@ func WithBackendChangeHandler[T any](fn BackendChangeFunc) SecureStoreOption[T] 
 }
 
 // DefaultSecureStore creates a SecureStore with the given codec and sensible defaults.
-// The primary backend is an EncryptedFileStore that writes AES-256-GCM
-// ciphertext to filePath+".enc" while keeping only a 32-byte master key in
-// the OS keyring, so the keyring payload stays a constant 44 bytes no matter
-// how large the stored values grow (Windows Credential Manager rejects blobs
-// over 2560 bytes). When the keyring is unavailable, it falls back to
+// The primary backend is an EncryptedFileStore writing to filePath+".enc"
+// with its master key in the OS keyring; see EncryptedFileStore for why only
+// the key lives there. When the keyring is unavailable, it falls back to
 // plaintext file storage at filePath.
 func DefaultSecureStore[T any](
 	serviceName, filePath string,
